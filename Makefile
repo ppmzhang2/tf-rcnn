@@ -28,14 +28,14 @@ install-pdm:
 update-lock:
 	pdm update --no-sync
 
-.PHONY: deploy-x86
-## deploy running environment of CPU
-deploy-x86:
-	pdm sync -G x86 --clean
+.PHONY: deploy-dev-x86
+## deploy x86 dev environment
+deploy-dev-x86:
+	pdm sync -G dev -G repl -G x86 --clean
 
-.PHONY: deploy-dev
-## deploy dev environment
-deploy-dev:
+.PHONY: deploy-dev-osx
+## deploy OSX dev environment
+deploy-dev-osx:
 	pdm sync -G dev -G repl -G osx --clean
 
 .PHONY: format
