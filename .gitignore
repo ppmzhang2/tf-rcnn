@@ -18,15 +18,15 @@ coverage.txt
 
 .DS_Store
 
-# pdm
+# pep582
 __pypackages__/
-.pdm-python
 
 # ide
 .idea/
 
-# pyenv
+# pyenv / pdm python version
 .python-version
+.pdm-python
 
 # jupyter notebook
 *.ipynb

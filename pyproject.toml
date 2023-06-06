@@ -87,11 +87,12 @@ repl = [
     "jupyter>=1.0.0",
 ]
 osx = [
-    "tensorflow-macos>=2.11.0",
+    "tensorflow-macos>=2.12.0",
     "tensorflow-metal>=0.7.0",
 ]
 x86 = [
-    "tensorflow>=2.11.0",
+    "tensorflow>=2.12.0",
+    "nvidia-cudnn-cu11>=8.9.2",
 ]
 
 [project]
