@@ -9,12 +9,10 @@ clean:
 	find . -name __pycache__ -delete
 	find . -name '*~' -delete
 	find . -name .coverage -delete
-	find . -name '.coverage.*' -delete
-	find . -name 'codeclimate.*' -delete
+	find . -name 'coverage.*' -delete
 	find . -name 'requirements*.txt' -delete
-	find . -name 'report.html' -delete
-	find . -name cov.xml -delete
 	find . -type d -name .pytest_cache -exec rm -r {} +
+	find . -type d -name .ruff_cache -exec rm -r {} +
 	find . -type d -name .mypy_cache -exec rm -r {} +
 
 .PHONY: install-pdm
@@ -41,19 +39,17 @@ deploy-dev-osx:
 .PHONY: format
 ## isort and yapf formatting
 format:
-	pdm run isort src tests
-	pdm run yapf -i -r src tests
+	isort src tests
+	yapf -i -r src tests
 
 .PHONY: lint
 ## pylint check
 lint:
-	pdm run pylint --rcfile=.pylintrc \
-	    --exit-zero \
-	    --msg-template='{path}:{line}:{column}:**[{msg_id}]** ({category}, {symbol})<br>{msg}' \
-	    --output-format=parseable src tests
+	ruff check src/rcnn --show-source --show-fixes \
+	    --exit-zero
 
 .PHONY: test
 test:
 	PYTHONPATH=./src \
-	    pdm run pytest -s -v --cov=app --cov-config=pyproject.toml \
+	    pytest -s -v --cov=app --cov-config=pyproject.toml \
 	    > coverage.txt
