@@ -32,22 +32,21 @@ def show_image_bbox(
     height, width, _ = image.shape
 
     # Draw bounding boxes
-    for bbox, label in zip(bboxes, labels, strict=True):
-        ymin, xmin, ymax, xmax = bbox
-        start_point = (int(xmin * width), int(ymin * height))
+    for bbx, lbl in zip(bboxes, labels, strict=True):
+        ymin, xmin, ymax, xmax = tf.get_static_value(bbx)
+        tag = names[int(tf.get_static_value(lbl))]
+        beg_point = (int(xmin * width), int(ymin * height))
         end_point = (int(xmax * width), int(ymax * height))
         thickness = 2  # Line thickness of 2 pixels
         image = cv2.rectangle(
             image,
-            start_point,
+            beg_point,
             end_point,
             COLOR_BOX,
             thickness,
         )
-
         # Put class tag
-        tag = names[label]
-        tag_position = start_point
+        tag_position = beg_point
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.5
         font_thickness = 1
