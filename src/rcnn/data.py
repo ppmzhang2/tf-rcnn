@@ -3,8 +3,8 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 # Set the constants for preprocessing
-HEIGHT = 800
-WIDTH = 800
+HEIGHT = 416
+WIDTH = 416
 MAX_BOX = 20
 
 
