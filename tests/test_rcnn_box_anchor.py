@@ -12,7 +12,7 @@ def test_box_anchor() -> None:
     # pre-defined anchors of ratio 1:1
     h = 24
     w = 32
-    pre_anchor = anchor(w, h, 32)
+    pre_anchor = anchor(h, w, 32)
     pre_anchor_11 = pre_anchor[:, :, 3:6, :]
     res = bbox.xmax(pre_anchor_11) - bbox.xmin(pre_anchor_11)
     exp = tf.tile(
