@@ -2,10 +2,7 @@
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-# Set the constants for preprocessing
-HEIGHT = 416
-WIDTH = 416
-MAX_BOX = 20
+from . import cfg
 
 
 def ratio_resize(
@@ -26,8 +23,8 @@ def ratio_resize(
         tuple[tf.Tensor, tf.Tensor]: resized image and bounding boxes
     """
     h, w, _ = tf.unstack(tf.shape(img))
-    scale_h = tf.cast(HEIGHT / h, tf.float32)
-    scale_w = tf.cast(WIDTH / w, tf.float32)
+    scale_h = tf.cast(cfg.H / h, tf.float32)
+    scale_w = tf.cast(cfg.W / w, tf.float32)
     scale = tf.minimum(scale_h, scale_w)
     new_h = tf.cast(tf.round(tf.cast(h, tf.float32) * scale), tf.int32)
     new_w = tf.cast(tf.round(tf.cast(w, tf.float32) * scale), tf.int32)
@@ -55,8 +52,8 @@ def image_pad(
         tuple[tf.Tensor, tf.Tensor]: padded image and bounding boxes
     """
     image_h, image_w, _ = tf.unstack(tf.shape(img))
-    pad_height = HEIGHT - image_h
-    pad_width = WIDTH - image_w
+    pad_height = cfg.H - image_h
+    pad_width = cfg.W - image_w
     img = tf.pad(img, paddings=[[0, pad_height], [0, pad_width], [0, 0]])
     if relative_coord:
         abs_boxes = bbx * tf.cast(
@@ -64,7 +61,7 @@ def image_pad(
             tf.float32,
         )
         bbx = abs_boxes / tf.cast(
-            tf.stack([HEIGHT, WIDTH, HEIGHT, WIDTH]),
+            tf.stack([cfg.H, cfg.W, cfg.H, cfg.W]),
             tf.float32,
         )
     return img, bbx
@@ -111,8 +108,8 @@ def process_data(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     img, bbx = image_pad(img, bbx)
 
     # pad the labels and bounding boxes to a fixed size
-    bbx = batch_pad(bbx, max_box=MAX_BOX, value=0)
-    lbl = batch_pad(lbl[:, tf.newaxis], max_box=MAX_BOX, value=-1)
+    bbx = batch_pad(bbx, max_box=cfg.MAX_BOX, value=0)
+    lbl = batch_pad(lbl[:, tf.newaxis], max_box=cfg.MAX_BOX, value=-1)
 
     return img, bbx, lbl
 
