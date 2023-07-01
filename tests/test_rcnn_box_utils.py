@@ -1,9 +1,9 @@
 """Test utils of `rcnn.box`."""
 import tensorflow as tf
 
-from rcnn.box import anchor
-from rcnn.box import bbox2delta
-from rcnn.box import delta2bbox
+from src.rcnn.box import anchor
+from src.rcnn.box import bbox2delta
+from src.rcnn.box import delta2bbox
 
 EPS = 1e-3
 

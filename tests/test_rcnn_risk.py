@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pytest
 import tensorflow as tf
 
-from rcnn import risk
+from src.rcnn import risk
 
 
 @dataclass

@@ -1,23 +1,15 @@
 """Test the RPN model."""
 import tensorflow as tf
-from tensorflow.keras.applications.vgg16 import VGG16
-from tensorflow.keras.layers import Input
 from tensorflow.keras.models import Model
 
-from rcnn.model import RPN
+from src.rcnn.model import mdl_rpn
 
 
 def setup_model() -> Model:
     """Set up the model."""
     # model = VGG16 + RPN
-    input_layer = Input(shape=(416, 416, 3))
-    vgg = VGG16(include_top=False)
-    rpn = RPN(9)
-    vgg_out = vgg(input_layer)
-    rpn_out = rpn(vgg_out)
-    model = Model(inputs=input_layer, outputs=rpn_out)
-    model.compile(optimizer="adam", loss="mse")
-    return model
+    mdl_rpn.compile(optimizer="adam", loss="mse")
+    return mdl_rpn
 
 
 def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:

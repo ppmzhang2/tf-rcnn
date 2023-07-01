@@ -1,32 +1,51 @@
 """Risk functions."""
 import tensorflow as tf
 
-from . import box
-from . import cfg
+from src.rcnn import box
+from src.rcnn import cfg
 
 NEG_TH_ACGT = 0.30  # lower threshold for anchor-GT highest IoU
 POS_TH_ACGT = 0.70  # upper threshold for anchor-GT highest IoU
 NEG_TH_GTAC = 0.15  # lower threshold for GT-anchor highest IoU
 
 
-def valid_ac_mask(ac: tf.Tensor, h: float, w: float) -> tf.Tensor:
+def rel_anchor() -> tf.Tensor:
+    """Get flattened anchor tensor in relative coordinates.
+
+    Returns:
+        tf.Tensor: anchor tensor (N_ac, 4)
+    """
+    _mat_trans = tf.constant([
+        [1. / cfg.H, 0., 0., 0.],
+        [0., 1. / cfg.W, 0., 0.],
+        [0., 0., 1. / cfg.H, 0.],
+        [0., 0., 0., 1. / cfg.W],
+    ])  # matrix to convert absolute coordinates to relative ones
+    ac_abs = tf.reshape(
+        box.anchor(cfg.H_FM, cfg.W_FM, cfg.STRIDE),
+        (-1, 4),
+    )
+    return tf.matmul(ac_abs, _mat_trans)
+
+
+def valid_ac_mask(ac: tf.Tensor) -> tf.Tensor:
     """Get valid anchors mask based on image size.
 
     Args:
-        ac (tf.Tensor): anchor tensor (N, 4)
+        ac (tf.Tensor): anchor tensor (N, 4) in relative coordinates
         h (float): height of the image
         w (float): width of the image
 
     Returns:
-        tf.Tensor: 0/1 mask of valid anchors (N,)
+        tf.Tensor: 0/1 mask of valid anchors (N,) of type tf.float32
     """
     return tf.where(
         (box.bbox.xmin(ac) >= 0) & (box.bbox.ymin(ac) >= 0)
         & (box.bbox.xmax(ac) >= box.bbox.xmin(ac))
         & (box.bbox.ymax(ac) >= box.bbox.ymin(ac))
-        & (box.bbox.xmax(ac) <= w) & (box.bbox.ymax(ac) <= h),
-        1,
-        0,
+        & (box.bbox.xmax(ac) <= 1) & (box.bbox.ymax(ac) <= 1),
+        1.0,
+        0.0,
     )
 
 
@@ -68,7 +87,8 @@ def rpn_target_iou(
         bx_gt (tf.Tensor): ground truth tensor (N_gt, 4)
 
     Returns:
-        tuple[tf.Tensor, tf.Tensor]: tags (N_ac,), target boxes (N_ac, 4);
+        tuple[tf.Tensor, tf.Tensor]: tags (N_ac,), target boxes (N_ac, 4), both
+            of type tf.float32
             - tags are flags for each anchor, with values:
               - +1: foreground
               - -1: background
@@ -135,9 +155,9 @@ def rpn_target_iou(
     _bx_tgt_sum = tf.reduce_sum(bx_tgt, axis=-1)
     _sum_neg = -8.0  # -2.0 * 4
     # 2. update with foreground
-    tags = tf.where(_bx_tgt_sum > 0, 1, tags)
+    tags = tf.where(_bx_tgt_sum > 0, 1.0, tags)
     # 3. update with background
-    tags = tf.where(_bx_tgt_sum == _sum_neg, -1, tags)
+    tags = tf.where(_bx_tgt_sum == _sum_neg, -1.0, tags)
     return tags, bx_tgt
 
 
@@ -145,16 +165,18 @@ def rpn_target(bx_gt: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Get RPN target tensors for training of a single image.
 
     Args:
-        bx_gt (tf.Tensor): ground truth boxes (N_ac, 4)
+        bx_gt (tf.Tensor): ground truth boxes (N_gt, 4)
 
     Returns:
         tuple[tf.Tensor, tf.Tensor, tf.Tensor]: object mask (N_ac,),
             background mask (N_ac,), and target deltas (N_ac, 4)
     """
-    bx_ac = box.anchor(cfg.H_FM, cfg.W_FM, cfg.STRIDE)
+    bx_ac = rel_anchor()  # (N_ac, 4)
     tags, bx_tgt = rpn_target_iou(bx_ac, bx_gt)
+    # print(f"{bx_tgt[200:205]=}")  # -2.0 or -1.0
+    # print(f"{bx_ac[200:205]=}")  # normal
     delta_tgt = box.bbox2delta(bx_tgt, bx_ac)
-    mask_valid = valid_ac_mask(bx_ac, cfg.H, cfg.W)
+    mask_valid = valid_ac_mask(bx_ac)
     mask_obj = tf.cast(tags > 0, tf.float32) * mask_valid
     mask_bkg_all = tf.cast(tags < 0, tf.float32) * mask_valid
     # randomly select background anchors with same number of objects
@@ -169,15 +191,20 @@ def risk_rpn_reg(
 ) -> tf.Tensor:
     """Delta regression risk for RPN with smooth L1 loss.
 
+    `bx` values cannot be `inf` or `-inf` otherwise the loss will be `nan`.
+
     Args:
         bx_del (tf.Tensor): predicted deltas (N_ac, 4)
         bx_tgt (tf.Tensor): target deltas (N_ac, 4)
         mask (tf.Tensor): 0/1 object mask (N_ac,)
 
     Returns:
-        tf.Tensor: risk
+        tf.Tensor: risk (scalar)
     """
-    loss = tf.keras.losses.huber(bx_del, bx_tgt)
+    fn_huber = tf.keras.losses.Huber(reduction="none", )
+    loss = fn_huber(bx_tgt, bx_del)  # (N_ac,)
+    # print(bx_del[:5])  # normal
+    # print(bx_tgt[:5])  # dw, dh = -inf
     return tf.reduce_sum(loss * mask) / (tf.reduce_sum(mask) + cfg.EPS)
 
 
@@ -189,7 +216,7 @@ def risk_rpn_obj(logits: tf.Tensor, mask_obj: tf.Tensor) -> tf.Tensor:
         mask_obj (tf.Tensor): 0/1 object mask (N_ac,)
 
     Returns:
-        tf.Tensor: risk
+        tf.Tensor: risk (scalar)
     """
     bce = tf.keras.losses.BinaryCrossentropy(
         from_logits=True,
@@ -207,7 +234,7 @@ def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
         mask_bkg (tf.Tensor): 0/1 background mask (N_ac,)
 
     Returns:
-        tf.Tensor: risk
+        tf.Tensor: risk (scalar)
     """
     bce = tf.keras.losses.BinaryCrossentropy(
         from_logits=True,
@@ -227,12 +254,13 @@ def risk_rpn(
     Args:
         bx_del (tf.Tensor): predicted deltas (N_ac, 4)
         logits (tf.Tensor): predicted logits (N_ac, 1)
-        bx_gt (tf.Tensor): ground truth boxes (N_ac, 4)
+        bx_gt (tf.Tensor): ground truth boxes (N_gt, 4)
 
     Returns:
-        tf.Tensor: risk
+        tf.Tensor: risk (scalar)
     """
     mask_obj, mask_bkg, bx_tgt = rpn_target(bx_gt)
+    # print(tf.reduce_sum(mask_obj), tf.reduce_sum(mask_bkg))  # > 0
     risk_reg = risk_rpn_reg(bx_del, bx_tgt, mask_obj)
     risk_obj = risk_rpn_obj(logits, mask_obj)
     risk_bkg = risk_rpn_bkg(logits, mask_bkg)
@@ -249,10 +277,10 @@ def risk_rpn_batch(
     Args:
         bx_del (tf.Tensor): predicted deltas (N, N_ac, 4)
         logits (tf.Tensor): predicted logits (N, N_ac, 1)
-        bx_gt (tf.Tensor): ground truth boxes (N, N_ac, 4)
+        bx_gt (tf.Tensor): ground truth boxes (N, N_gt, 4)
 
     Returns:
-        tf.Tensor: risk
+        tf.Tensor: risk (scalar)
     """
     risk = tf.map_fn(
         lambda x: risk_rpn(x[0], x[1], x[2]),

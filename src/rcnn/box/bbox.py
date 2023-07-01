@@ -6,7 +6,7 @@ format: (y_min, x_min, y_max, x_max, objectness score, ...)
 """
 import tensorflow as tf
 
-from ._const import EPSILON
+from src.rcnn import cfg
 
 
 def xmin(bbox: tf.Tensor) -> tf.Tensor:
@@ -222,7 +222,7 @@ def iou(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     area_label = area(bbox_lbl)
     area_inter = interarea(bbox_prd, bbox_lbl)
     area_union = area_pred + area_label - area_inter
-    return (area_inter + EPSILON) / (area_union + EPSILON)
+    return (area_inter + cfg.EPS) / (area_union + cfg.EPS)
 
 
 def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:

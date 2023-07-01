@@ -1,9 +1,9 @@
 """Utils of module box."""
 import tensorflow as tf
 
-from . import bbox
-from . import delta
-from ._const import EPSILON
+from src.rcnn import cfg
+from src.rcnn.box import bbox
+from src.rcnn.box import delta
 
 
 def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
@@ -44,13 +44,13 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
     """
     xctr_r = bbox.xctr(bbox_r)
     yctr_r = bbox.yctr(bbox_r)
-    w_r = tf.math.maximum(bbox.w(bbox_r), EPSILON)
-    h_r = tf.math.maximum(bbox.h(bbox_r), EPSILON)
+    w_r = tf.math.maximum(bbox.w(bbox_r), cfg.EPS)
+    h_r = tf.math.maximum(bbox.h(bbox_r), cfg.EPS)
     xctr_l = bbox.xctr(bbox_l)
     yctr_l = bbox.yctr(bbox_l)
     w_l = bbox.w(bbox_l)
     h_l = bbox.h(bbox_l)
-    return tf.stack(
+    bx_del = tf.stack(
         [
             (xctr_l - xctr_r) / w_r,
             (yctr_l - yctr_r) / h_r,
@@ -59,3 +59,4 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
         ],
         axis=-1,
     )
+    return tf.clip_by_value(bx_del, -999.0, 999.0)

@@ -6,9 +6,9 @@ format: (y_min, x_min, y_max, x_max)
 """
 import tensorflow as tf
 
-from ._const import N_ANCHOR
-from ._const import SQRT2
+from src.rcnn import cfg
 
+SQRT2 = 1.4142135624
 RATIO_HW = (
     (SQRT2, SQRT2 / 2),
     (1, 1),
@@ -112,8 +112,8 @@ def _center_coord(h: int, w: int, stride: int) -> tf.Tensor:
         vy[:, tf.newaxis, tf.newaxis],
     )
     xss, yss = (
-        tf.tile(xs, (h, 1, N_ANCHOR)),
-        tf.tile(ys, (1, w, N_ANCHOR)),
+        tf.tile(xs, (h, 1, cfg.N_ANCHOR)),
+        tf.tile(ys, (1, w, cfg.N_ANCHOR)),
     )
     # (H, W), NOT the other way around
     return tf.stack([yss, xss], axis=-1) * stride + stride // 2
@@ -129,7 +129,7 @@ def anchor(h: int, w: int, stride: int) -> tf.Tensor:
 
     Returns:
         tf.Tensor: anchor tensor of shape (H, W, 9, 4) of format
-            (y_min, x_min, y_max, x_max)
+            (y_min, x_min, y_max, x_max) in absolute coordinates
     """
     hw_ = 0.5 * _hw(h, w, stride)
     coords = _center_coord(h, w, stride)
