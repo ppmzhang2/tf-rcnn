@@ -26,7 +26,11 @@ def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     inputs = tf.random.uniform((b, 416, 416, 3))  # (B, H, W, C)
     boxes = tf.random.uniform((b, 13, 13, 36))  # (B, H_feat, W_feat, 9 * 4)
     labels = tf.random.uniform((b, 13, 13, 9))  # (B, H_feat, W_feat, 9)
-    return inputs, tf.reshape(boxes, (b, -1, 4)), tf.reshape(labels, (b, -1))
+    return (
+        inputs,
+        tf.reshape(boxes, (b, -1, 4)),
+        tf.reshape(labels, (b, -1, 1)),
+    )
 
 
 def test_rpt_training() -> None:

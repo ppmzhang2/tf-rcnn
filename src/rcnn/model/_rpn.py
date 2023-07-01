@@ -51,8 +51,8 @@ class RPN(tf.keras.Model):
             list[tf.Tensor]: Bounding box regression predictions and
             classification predictions.
             The first tensor has shape [n_batch, N, 4] and the second tensor
-            has shape [n_batch, N], where `N` is the number of all anchors in
-            the feature map.
+            has shape [n_batch, N, 1], where `N` is the number of all anchors
+            in the feature map.
             e.g. for a 1024 by 768 image of stride 32,
             `N = 1024 / 32 * 768 / 32 * 9 = 6912`.
         """
@@ -62,5 +62,5 @@ class RPN(tf.keras.Model):
         lbl_cls = self.cls_layer(shared)  # label classification
         return [
             tf.reshape(box_reg, (n_batch, -1, 4)),  # [n_batch, N, 4]
-            tf.reshape(lbl_cls, (n_batch, -1)),  # [n_batch, N]
+            tf.reshape(lbl_cls, (n_batch, -1, 1)),  # [n_batch, N, 1]
         ]

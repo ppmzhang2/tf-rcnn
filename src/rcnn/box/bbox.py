@@ -225,8 +225,8 @@ def iou(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     return (area_inter + EPSILON) / (area_union + EPSILON)
 
 
-def cartesian_iou(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
-    """Calculate IoU of two sets of bounding boxes.
+def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
+    """Calculate IoU matrix of two sets of bounding boxes.
 
     Args:
         bbox_prd (tf.Tensor): predicted bounding boxes of shape (N1, C)

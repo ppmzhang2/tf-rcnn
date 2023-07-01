@@ -12,11 +12,11 @@ def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
     e.g.: anchor (base) + delta (diff) = predicted (bbox)
 
     Args:
-        base (tf.Tensor): base bbox tensor of shape (H, W, 9, 4)
-        diff (tf.Tensor): delta tensor of shape (H, W, 9, 4)
+        base (tf.Tensor): base bbox tensor of shape (N1, N2, ..., Nk, C)
+        diff (tf.Tensor): delta tensor of shape (N1, N2, ..., Nk, C)
 
     Returns:
-        tf.Tensor: bbox tensor of shape (H, W, 9, C), where C >= 4
+        tf.Tensor: bbox tensor of shape (N1, N2, ..., Nk, C) where C >= 4
     """
     xctr_ = bbox.xctr(base) + bbox.w(base) * delta.dx(diff)
     yctr_ = bbox.yctr(base) + bbox.h(base) * delta.dy(diff)
@@ -35,12 +35,12 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
 
     Args:
         bbox_l (tf.Tensor): minuend bbox tensor (left operand) of shape
-            (H, W, 9, C), where C >= 4
+            (N1, N2, ..., Nk, C), where C >= 4
         bbox_r (tf.Tensor): subtrahend bbox tensor (right operand) of shape
-            (H, W, 9, C), where C >= 4
+            (N1, N2, ..., Nk, C), where C >= 4
 
     Returns:
-        tf.Tensor: delta tensor of shape (H, W, 9, 4)
+        tf.Tensor: delta tensor of shape (N1, N2, ..., Nk, 4)
     """
     xctr_r = bbox.xctr(bbox_r)
     yctr_r = bbox.yctr(bbox_r)
