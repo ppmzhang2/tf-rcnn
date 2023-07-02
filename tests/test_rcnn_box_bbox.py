@@ -37,3 +37,30 @@ def test_box_bbox_trans_random(bx: tf.Tensor) -> None:
     xywh = box.bbox.to_xywh(bx)
     res = box.bbox.from_xywh(xywh)
     assert tf.get_static_value(tf.reduce_all(tf.math.abs(res - bx) < EPS))
+
+
+def test_box_bbox_clip():
+    # Create a bounding box tensor
+    bbox = tf.constant([
+        [10.0, 10.0, 30.0, 30.0, 0.6],  # within
+        [-10.0, -10.0, 30.0, 30.0, 0.8],  # partly outside (top-left)
+        [10.0, 10.0, 130.0, 130.0, 0.9],  # partly outside (bottom-right)
+        [-10.0, -10.0, 130.0, 130.0, 0.7],  # completely outside
+    ])
+
+    # Set image dimensions
+    h, w = 100.0, 100.0
+
+    # Expected output
+    expected_output = tf.constant([
+        [10.0, 10.0, 30.0, 30.0, 0.6],
+        [0.0, 0.0, 30.0, 30.0, 0.8],
+        [10.0, 10.0, 100.0, 100.0, 0.9],
+        [0.0, 0.0, 100.0, 100.0, 0.7],
+    ])
+
+    # Call clip function
+    output = box.bbox.clip(bbox, h, w)
+
+    # Check if the output matches the expected output
+    assert tf.reduce_all(tf.equal(output, expected_output))

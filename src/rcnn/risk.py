@@ -9,25 +9,6 @@ POS_TH_ACGT = 0.70  # upper threshold for anchor-GT highest IoU
 NEG_TH_GTAC = 0.15  # lower threshold for GT-anchor highest IoU
 
 
-def rel_anchor() -> tf.Tensor:
-    """Get flattened anchor tensor in relative coordinates.
-
-    Returns:
-        tf.Tensor: anchor tensor (N_ac, 4)
-    """
-    _mat_trans = tf.constant([
-        [1. / cfg.H, 0., 0., 0.],
-        [0., 1. / cfg.W, 0., 0.],
-        [0., 0., 1. / cfg.H, 0.],
-        [0., 0., 0., 1. / cfg.W],
-    ])  # matrix to convert absolute coordinates to relative ones
-    ac_abs = tf.reshape(
-        box.anchor(cfg.H_FM, cfg.W_FM, cfg.STRIDE),
-        (-1, 4),
-    )
-    return tf.matmul(ac_abs, _mat_trans)
-
-
 def valid_ac_mask(ac: tf.Tensor) -> tf.Tensor:
     """Get valid anchors mask based on image size.
 
@@ -171,12 +152,11 @@ def rpn_target(bx_gt: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         tuple[tf.Tensor, tf.Tensor, tf.Tensor]: object mask (N_ac,),
             background mask (N_ac,), and target deltas (N_ac, 4)
     """
-    bx_ac = rel_anchor()  # (N_ac, 4)
-    tags, bx_tgt = rpn_target_iou(bx_ac, bx_gt)
+    tags, bx_tgt = rpn_target_iou(box.anchors, bx_gt)
     # print(f"{bx_tgt[200:205]=}")  # -2.0 or -1.0
-    # print(f"{bx_ac[200:205]=}")  # normal
-    delta_tgt = box.bbox2delta(bx_tgt, bx_ac)
-    mask_valid = valid_ac_mask(bx_ac)
+    # print(f"{box.anchors[200:205]=}")  # normal
+    delta_tgt = box.bbox2delta(bx_tgt, box.anchors)
+    mask_valid = valid_ac_mask(box.anchors)
     mask_obj = tf.cast(tags > 0, tf.float32) * mask_valid
     mask_bkg_all = tf.cast(tags < 0, tf.float32) * mask_valid
     # randomly select background anchors with same number of objects

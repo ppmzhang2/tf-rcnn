@@ -119,8 +119,8 @@ def _center_coord(h: int, w: int, stride: int) -> tf.Tensor:
     return tf.stack([yss, xss], axis=-1) * stride + stride // 2
 
 
-def anchor(h: int, w: int, stride: int) -> tf.Tensor:
-    """Get anchors for each grid cell.
+def abs_anchors(h: int, w: int, stride: int) -> tf.Tensor:
+    """Get anchors for each grid cell in absolute coordinates.
 
     Args:
         h (int): feature map height
@@ -134,3 +134,25 @@ def anchor(h: int, w: int, stride: int) -> tf.Tensor:
     hw_ = 0.5 * _hw(h, w, stride)
     coords = _center_coord(h, w, stride)
     return tf.concat([coords - hw_, coords + hw_], axis=-1)
+
+
+def rel_anchor() -> tf.Tensor:
+    """Get flattened anchor tensor in relative coordinates.
+
+    Returns:
+        tf.Tensor: anchor tensor (N_ac, 4)
+    """
+    _mat_trans = tf.constant([
+        [1. / cfg.H, 0., 0., 0.],
+        [0., 1. / cfg.W, 0., 0.],
+        [0., 0., 1. / cfg.H, 0.],
+        [0., 0., 0., 1. / cfg.W],
+    ])  # matrix to convert absolute coordinates to relative ones
+    ac_abs = tf.reshape(
+        abs_anchors(cfg.H_FM, cfg.W_FM, cfg.STRIDE),
+        (-1, 4),
+    )
+    return tf.matmul(ac_abs, _mat_trans)
+
+
+anchors = rel_anchor()  # flattened relative anchors (N_ac, 4)

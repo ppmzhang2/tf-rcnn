@@ -54,6 +54,7 @@ class Config:
     STRIDE = 32
     W = 416  # original image width
     H = 416  # original image height
+    C = 3  # number of channels
     W_FM = W // STRIDE  # feature map width
     H_FM = H // STRIDE  # feature map height
     N_ANCHOR = 9  # number of anchors per grid cell
