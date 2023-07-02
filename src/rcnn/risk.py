@@ -181,7 +181,7 @@ def risk_rpn_reg(
     Returns:
         tf.Tensor: risk (scalar)
     """
-    fn_huber = tf.keras.losses.Huber(reduction="none", )
+    fn_huber = tf.keras.losses.Huber(reduction="none")
     loss = fn_huber(bx_tgt, bx_del)  # (N_ac,)
     # print(bx_del[:5])  # normal
     # print(bx_tgt[:5])  # dw, dh = -inf
@@ -224,9 +224,25 @@ def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
     return tf.reduce_sum(loss * mask_bkg) / (tf.reduce_sum(mask_bkg) + cfg.EPS)
 
 
+def risk_roi_area(bx_roi: tf.Tensor, th: float = 0.01) -> tf.Tensor:
+    """Penalize RoIs with area smaller than the threshold.
+
+    Args:
+        bx_roi (tf.Tensor): RoI boxes (N_roi, 4)
+        th (float, optional): threshold. Defaults to 0.01.
+
+    Returns:
+        tf.Tensor: risk (scalar)
+    """
+    area = box.bbox.area(bx_roi)  # (N_roi,)
+    mask = tf.cast(area < th, tf.float32)
+    return tf.reduce_sum(mask) / (tf.reduce_sum(mask) + cfg.EPS)
+
+
 def risk_rpn(
     bx_del: tf.Tensor,
     logits: tf.Tensor,
+    bx_roi: tf.Tensor,
     bx_gt: tf.Tensor,
 ) -> tf.Tensor:
     """RPN risk of a single image.
@@ -234,6 +250,7 @@ def risk_rpn(
     Args:
         bx_del (tf.Tensor): predicted deltas (N_ac, 4)
         logits (tf.Tensor): predicted logits (N_ac, 1)
+        bx_roi (tf.Tensor): RoI boxes (N_roi, 4)
         bx_gt (tf.Tensor): ground truth boxes (N_gt, 4)
 
     Returns:
@@ -244,12 +261,14 @@ def risk_rpn(
     risk_reg = risk_rpn_reg(bx_del, bx_tgt, mask_obj)
     risk_obj = risk_rpn_obj(logits, mask_obj)
     risk_bkg = risk_rpn_bkg(logits, mask_bkg)
-    return risk_reg + risk_obj + risk_bkg
+    risk_roi = risk_roi_area(bx_roi)
+    return risk_reg + risk_obj + risk_bkg + risk_roi
 
 
 def risk_rpn_batch(
     bx_del: tf.Tensor,
     logits: tf.Tensor,
+    bx_roi: tf.Tensor,
     bx_gt: tf.Tensor,
 ) -> tf.Tensor:
     """RPN risk of a batch of images.
@@ -257,14 +276,15 @@ def risk_rpn_batch(
     Args:
         bx_del (tf.Tensor): predicted deltas (N, N_ac, 4)
         logits (tf.Tensor): predicted logits (N, N_ac, 1)
+        bx_roi (tf.Tensor): RoI boxes (N, N_roi, 4)
         bx_gt (tf.Tensor): ground truth boxes (N, N_gt, 4)
 
     Returns:
         tf.Tensor: risk (scalar)
     """
     risk = tf.map_fn(
-        lambda x: risk_rpn(x[0], x[1], x[2]),
-        (bx_del, logits, bx_gt),
-        dtype=tf.float32,
+        lambda x: risk_rpn(x[0], x[1], x[2], x[3]),
+        (bx_del, logits, bx_roi, bx_gt),
+        fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
     )
     return tf.reduce_mean(risk)

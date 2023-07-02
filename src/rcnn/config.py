@@ -52,8 +52,8 @@ class Config:
     # data
     EPS = 1e-4
     STRIDE = 32
-    W = 416  # original image width
-    H = 416  # original image height
+    W = 512  # original image width
+    H = 512  # original image height
     C = 3  # number of channels
     W_FM = W // STRIDE  # feature map width
     H_FM = H // STRIDE  # feature map height

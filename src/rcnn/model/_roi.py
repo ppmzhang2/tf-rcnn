@@ -4,6 +4,42 @@ import tensorflow as tf
 from src.rcnn import box
 
 
+def get_roi(
+    rpn_prob: tf.Tensor,
+    rpn_del: tf.Tensor,
+    n_score: int,
+    n_nms: int,
+    nms_th: float,
+) -> tf.Tensor:
+    """Get proposed Region of Interests (RoIs) of a single image.
+
+    Args:
+        rpn_prob (tf.Tensor): RPN classification predictions.
+            Shape [N_ac, 1].
+        rpn_del (tf.Tensor): RPN bounding box delta predictions.
+            Shape [N_ac, 4].
+        n_score (int): number of top scores to keep.
+        n_nms (int): number of RoIs to keep after NMS.
+        nms_th (float): NMS threshold.
+
+    Returns:
+        tf.Tensor: proposed Region of Interests (RoIs).
+    """
+    scores = tf.squeeze(rpn_prob, axis=-1)  # (N_ac,)
+    top_score_idx = tf.math.top_k(scores, k=n_score).indices
+    top_score = tf.gather(scores, top_score_idx)  # (n_score,)
+    top_delta = tf.gather(rpn_del, top_score_idx)  # (n_score, 4)
+    top_ac = tf.gather(box.anchors, top_score_idx)  # (n_score, 4)
+    rois_all = box.bbox2delta(top_ac, top_delta)  # (n_score, 4)
+    # clip
+    rois = box.bbox.clip(rois_all, 1., 1.)  # (n_score, 4)
+    # nms
+    nms_idx = tf.image.non_max_suppression(rois, top_score, n_nms,
+                                           nms_th)  # (n_nms,)
+    rois = tf.gather(rois, nms_idx)  # (n_nms, 4)
+    return rois
+
+
 class RoiBlock(tf.keras.Model):
     """RoI Block.
 
@@ -25,32 +61,6 @@ class RoiBlock(tf.keras.Model):
         self._n_nms = n_nms
         self._nms_th = nms_th
 
-    def get_roi(self, rpn_prob: tf.Tensor, rpn_del: tf.Tensor) -> tf.Tensor:
-        """Get proposed Region of Interests (RoIs) of a single image.
-
-        Args:
-            rpn_prob (tf.Tensor): RPN classification predictions.
-                Shape [N_ac, 1].
-            rpn_del (tf.Tensor): RPN bounding box delta predictions.
-                Shape [N_ac, 4].
-
-        Returns:
-            tf.Tensor: proposed Region of Interests (RoIs).
-        """
-        scores = tf.squeeze(rpn_prob, axis=-1)  # (N_ac,)
-        top_score_idx = tf.math.top_k(scores, k=self._n_score).indices
-        top_score = tf.gather(scores, top_score_idx)  # (n_score,)
-        top_delta = tf.gather(rpn_del, top_score_idx)  # (n_score, 4)
-        top_ac = tf.gather(box.anchors, top_score_idx)  # (n_score, 4)
-        rois_all = box.bbox2delta(top_ac, top_delta)  # (n_score, 4)
-        # clip
-        rois = box.bbox.clip(rois_all, 1., 1.)  # (n_score, 4)
-        # nms
-        nms_idx = tf.image.non_max_suppression(rois, top_score, self._n_nms,
-                                               self._nms_th)  # (n_nms,)
-        rois = tf.gather(rois, nms_idx)  # (n_nms, 4)
-        return rois
-
     def call(self, rpn_prob: tf.Tensor, rpn_del: tf.Tensor) -> tf.Tensor:
         """Get proposed Region of Interests (RoIs) of a batch of images.
 
@@ -63,5 +73,15 @@ class RoiBlock(tf.keras.Model):
         Returns:
             tf.Tensor: proposed Region of Interests (RoIs) [B, n_nms, 4]
         """
-        rois = tf.map_fn(self.get_roi, (rpn_prob, rpn_del), dtype=tf.float32)
+        rois = tf.map_fn(
+            lambda x: get_roi(
+                x[0],
+                x[1],
+                self._n_score,
+                self._n_nms,
+                self._nms_th,
+            ),
+            (rpn_prob, rpn_del),
+            fn_output_signature=tf.TensorSpec([None, 4], tf.float32),
+        )
         return rois

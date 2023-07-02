@@ -9,23 +9,12 @@ from src.rcnn.model._roi import RoiBlock
 
 __all__ = [
     "get_rpn_model",
-    "get_roi_model",
 ]
 
 
 def get_rpn_model() -> Model:
-    layer_in = Input(shape=(cfg.H, cfg.W, cfg.C))
-    vgg = VGG16(include_top=False)
-    rpn = ProposalBlock()
-    feature_map = vgg(layer_in)
-    rpn_box, rpn_cls = rpn(feature_map)
-    mdl = Model(inputs=layer_in, outputs=[rpn_box, rpn_cls])
-    return mdl
-
-
-def get_roi_model() -> Model:
     n_score = 1000
-    n_nms = 100
+    n_nms = 10
     nms_th = 0.7
     layer_in = Input(shape=(cfg.H, cfg.W, cfg.C))
     vgg = VGG16(include_top=False)
@@ -34,5 +23,5 @@ def get_roi_model() -> Model:
     rpn_box, rpn_cls = rpn(feature_map)
     roi = RoiBlock(n_score, n_nms, nms_th)
     roi_box = roi(rpn_cls, rpn_box)
-    mdl = Model(inputs=layer_in, outputs=roi_box)
+    mdl = Model(inputs=layer_in, outputs=[roi_box, rpn_box, rpn_cls])
     return mdl
