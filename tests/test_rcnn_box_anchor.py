@@ -1,7 +1,7 @@
 """Test Faster R-CNN `box` module."""
 import tensorflow as tf
 
-from src.rcnn.box import anchor
+from src.rcnn.box import abs_anchors
 from src.rcnn.box import bbox
 
 EPS = 1e-3
@@ -12,7 +12,7 @@ def test_box_anchor() -> None:
     # pre-defined anchors of ratio 1:1
     h = 24
     w = 32
-    pre_anchor = anchor(h, w, 32)
+    pre_anchor = abs_anchors(h, w, 32)
     pre_anchor_11 = pre_anchor[:, :, 3:6, :]
     res = bbox.xmax(pre_anchor_11) - bbox.xmin(pre_anchor_11)
     exp = tf.tile(

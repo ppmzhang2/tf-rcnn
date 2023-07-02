@@ -273,3 +273,24 @@ def to_xywh(bbox: tf.Tensor) -> tf.Tensor:
     """
     xywh = tf.stack([xctr(bbox), yctr(bbox), w(bbox), h(bbox)], axis=-1)
     return tf.concat([xywh, rem(bbox)], axis=-1)
+
+
+def clip(bbox: tf.Tensor, h: float, w: float) -> tf.Tensor:
+    """Clip bounding box to a given image shape.
+
+    Args:
+        bbox (tf.Tensor): bounding box tensor (YXYX) of shape
+            (N1, N2, ..., Nk, C) where C >= 4
+        h (float): image height
+        w (float): image width
+
+    Returns:
+        tf.Tensor: clipped bounding box tensor (YXYX) of shape
+            (N1, N2, ..., Nk, C)
+    """
+    ymin_ = tf.clip_by_value(ymin(bbox), 0.0, h)
+    xmin_ = tf.clip_by_value(xmin(bbox), 0.0, w)
+    ymax_ = tf.clip_by_value(ymax(bbox), 0.0, h)
+    xmax_ = tf.clip_by_value(xmax(bbox), 0.0, w)
+    yxyx = tf.stack([ymin_, xmin_, ymax_, xmax_], axis=-1)
+    return tf.concat([yxyx, rem(bbox)], axis=-1)

@@ -1,12 +1,12 @@
-"""Region Proposal Network (RPN) for Faster R-CNN."""
+"""Region Proposal Block."""
 import tensorflow as tf
 from tensorflow.keras.layers import Conv2D
 
 from src.rcnn import cfg
 
 
-class RPN(tf.keras.Model):
-    """Region Proposal Network (RPN) for Faster R-CNN.
+class ProposalBlock(tf.keras.Model):
+    """Region Proposal Block.
 
     It accepts a feature map from a backbone network as input and outputs
     bounding box regression predictions and classification predictions.
@@ -37,15 +37,15 @@ class RPN(tf.keras.Model):
                                 activation="sigmoid",
                                 name="rpn_cls")
 
-    def call(self, inputs: tf.Tensor) -> list[tf.Tensor]:
+    def call(self, inputs: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
         """Forward pass.
 
         Args:
             inputs (tf.Tensor): Feature map from the backbone network.
 
         Returns:
-            list[tf.Tensor]: Bounding box regression predictions and
-            classification predictions.
+            tuple[tf.Tensor, tf.Tensor]: Bounding box regression predictions
+            and classification predictions.
             The first tensor has shape [n_batch, N, 4] and the second tensor
             has shape [n_batch, N, 1], where `N` is the number of all anchors
             in the feature map.
@@ -56,7 +56,7 @@ class RPN(tf.keras.Model):
         shared = self._conv2d(inputs)  # Shared convolutional base
         box_reg = self.reg_layer(shared)  # coordinate regression
         lbl_cls = self.cls_layer(shared)  # label classification
-        return [
+        return (
             tf.reshape(box_reg, (n_batch, -1, 4)),  # [n_batch, N, 4]
             tf.reshape(lbl_cls, (n_batch, -1, 1)),  # [n_batch, N, 1]
-        ]
+        )

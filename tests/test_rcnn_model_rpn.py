@@ -2,12 +2,13 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
 
-from src.rcnn.model import mdl_rpn
+from src.rcnn.model import get_rpn_model
 
 
 def setup_model() -> Model:
     """Set up the model."""
     # model = VGG16 + RPN
+    mdl_rpn = get_rpn_model()
     mdl_rpn.compile(optimizer="adam", loss="mse")
     return mdl_rpn
 

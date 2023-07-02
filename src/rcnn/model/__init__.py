@@ -1,8 +1,10 @@
 """Model package."""
-from src.rcnn.model._model import mdl_rpn
-from src.rcnn.model._rpn import RPN
+from src.rcnn.model._model import get_roi_model
+from src.rcnn.model._model import get_rpn_model
+from src.rcnn.model._proposal import ProposalBlock
 
 __all__ = [
-    "mdl_rpn",
-    "RPN",
+    "get_roi_model",
+    "get_rpn_model",
+    "ProposalBlock",
 ]
