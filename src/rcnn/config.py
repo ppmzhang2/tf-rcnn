@@ -56,6 +56,7 @@ class Config:
     H = 416  # original image height
     W_FM = W // STRIDE  # feature map width
     H_FM = H // STRIDE  # feature map height
+    N_ANCHOR = 9  # number of anchors per grid cell
     MAX_BOX = 20
 
 

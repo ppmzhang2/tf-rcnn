@@ -2,6 +2,8 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Conv2D
 
+from src.rcnn import cfg
+
 
 class RPN(tf.keras.Model):
     """Region Proposal Network (RPN) for Faster R-CNN.
@@ -10,19 +12,13 @@ class RPN(tf.keras.Model):
     bounding box regression predictions and classification predictions.
     """
 
-    def __init__(
-        self,
-        n_anchor: int,
-        **kwargs,
-    ):
+    def __init__(self, **kwargs):
         """Initialize the RPN.
 
         Args:
-            n_anchor (int): Number of anchors per pixel location, usually 3*3.
             kwargs: Other keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        self._n_anchor = n_anchor
 
         # R-CNN paper uses 512 filters for the VGG backbone
         self._conv2d = Conv2D(
@@ -33,11 +29,11 @@ class RPN(tf.keras.Model):
             name="rpn_conv",
         )
         # Regression layer for the bounding box coordinates
-        self.reg_layer = Conv2D(self._n_anchor * 4, (1, 1),
+        self.reg_layer = Conv2D(cfg.N_ANCHOR * 4, (1, 1),
                                 activation="linear",
                                 name="rpn_bbox")
         # Classification layer to predict the foreground or background
-        self.cls_layer = Conv2D(self._n_anchor, (1, 1),
+        self.cls_layer = Conv2D(cfg.N_ANCHOR, (1, 1),
                                 activation="sigmoid",
                                 name="rpn_cls")
 

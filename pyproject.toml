@@ -125,7 +125,7 @@ homepage = "https://github.com/ppmzhang2/tf-rcnn"
 [tool.ruff]
 # all but incompatible options: G, TID, TCH, PTH
 select = [
-    "E", "F", "B", "Q", "I", "C90", "N", "D", "UP", "YTT", "ANN", "S", "BLE",
+    "E", "F", "B", "Q", "C90", "N", "D", "UP", "YTT", "ANN", "S", "BLE",
     "FBT", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "INP",
     "PIE", "T20", "PT", "Q", "RET", "SIM", "ARG", "ERA", "PD", "PGH", "PL",
     "TRY", "RUF",

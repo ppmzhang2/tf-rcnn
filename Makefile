@@ -50,6 +50,6 @@ lint:
 
 .PHONY: test
 test:
-	PYTHONPATH=./src \
+	PYTHONPATH=. \
 	    pytest -s -v --cov=app --cov-config=pyproject.toml \
 	    > coverage.txt

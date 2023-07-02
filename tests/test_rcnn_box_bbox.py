@@ -2,7 +2,7 @@
 import pytest
 import tensorflow as tf
 
-from rcnn import box
+from src.rcnn import box
 
 EPS = 1e-3
 BBOX1 = (0.0, 0.4, 5.0, 6.4)
