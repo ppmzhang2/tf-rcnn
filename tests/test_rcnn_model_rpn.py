@@ -16,11 +16,13 @@ def setup_model() -> Model:
 def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Set up the inputs / outputs."""
     b = 16  # batch size
-    inputs = tf.random.uniform((b, 416, 416, 3))  # (B, H, W, C)
-    boxes = tf.random.uniform((b, 13, 13, 36))  # (B, H_feat, W_feat, 9 * 4)
-    labels = tf.random.uniform((b, 13, 13, 9))  # (B, H_feat, W_feat, 9)
+    inputs = tf.random.uniform((b, 512, 512, 3))  # (B, H, W, C)
+    rois = tf.random.uniform((b, 10, 4))  # (B, N_rois, 4)
+    boxes = tf.random.uniform((b, 16, 16, 36))  # (B, H_feat, W_feat, 9 * 4)
+    labels = tf.random.uniform((b, 16, 16, 9))  # (B, H_feat, W_feat, 9)
     return (
         inputs,
+        rois,
         tf.reshape(boxes, (b, -1, 4)),
         tf.reshape(labels, (b, -1, 1)),
     )
@@ -29,15 +31,16 @@ def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
 def test_rpt_training() -> None:
     """Test the RPN model training."""
     model = setup_model()
-    inputs, boxes, labels = setup_io()
-    history = model.fit(inputs, [boxes, labels], epochs=1)
+    inputs, rois, boxes, labels = setup_io()
+    history = model.fit(inputs, [rois, boxes, labels], epochs=1)
     assert history.history["loss"][0] > 0
 
 
 def test_rpt_predict() -> None:
     """Test the RPN model output."""
     model = setup_model()
-    inputs, boxes, labels = setup_io()
+    inputs, rois, boxes, labels = setup_io()
     output = model.predict(inputs)
-    assert output[0].shape == boxes.shape
-    assert output[1].shape == labels.shape
+    assert output[0].shape == rois.shape
+    assert output[1].shape == boxes.shape
+    assert output[2].shape == labels.shape
