@@ -31,6 +31,3 @@ __pypackages__/
 # jupyter notebook
 *.ipynb
 .ipynb_checkpoints/
-
-# model save
-model_config/
