@@ -10,20 +10,19 @@ THICKNESS_TXT = 1  # Text thickness
 SIZE_FONT = 0.5  # Font size
 
 
-def show_image_bbox(
+def show_pred(
     image: tf.Tensor,
     bboxes: tf.Tensor,
     labels: tf.Tensor,
     names: list[str],
 ) -> None:
-    """Visualize an image with bounding boxes using OpenCV.
+    """Visualize the predicted bounding boxes and class tags on the image.
 
     Args:
-        image (tf.Tensor): The input image tensor.
-        bboxes (tf.Tensor): A list of bounding box coordinates in the format
-            (ymin, xmin, ymax, xmax).
-        labels (tf.Tensor): A list of label indices for the bounding boxes.
-        names (list[str]): A list of label names.
+        image (tf.Tensor): The input image tensor (H, W, C).
+        bboxes (tf.Tensor): Bounding box tensor (N, 4).
+        labels (tf.Tensor): Class label tensor (N,).
+        names (list[str]): List of class names.
     """
     # Convert image tensor to numpy array
     image = image.numpy()
@@ -61,6 +60,41 @@ def show_image_bbox(
     cv2.destroyAllWindows()
 
 
+def show_rois(image: tf.Tensor, rois: tf.Tensor) -> None:
+    """Visualize the predicted Region of Interests (ROIs) on the image.
+
+    Args:
+        image (tf.Tensor): The input image tensor (H, W, C).
+        rois (tf.Tensor): RoI tensor (N, 4).
+    """
+    # Convert image tensor to numpy array
+    image = image.numpy()
+    # Convert image from RGB to BGR as OpenCV uses BGR format
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    # Get image dimensions
+    height, width, _ = image.shape
+
+    # Draw bounding boxes
+    for roi in rois:
+        ymin, xmin, ymax, xmax = tf.get_static_value(roi)
+        beg_point = (int(xmin * width), int(ymin * height))
+        end_point = (int(xmax * width), int(ymax * height))
+        thickness = THICKNESS_BOX
+        image = cv2.rectangle(
+            image,
+            beg_point,
+            end_point,
+            COLOR_BOX,
+            thickness,
+        )
+
+    # Display image
+    cv2.imshow("Image with Bounding Boxes", image)
+    # Wait for a key press and close the window afterwards
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
 if __name__ == "__main__":
     (ds_train, ds_test), ds_info = tfds.load(
         "voc/2007",
@@ -72,10 +106,5 @@ if __name__ == "__main__":
     names = ds_info.features["objects"]["label"].names
 
     for example in ds_train:
-        show_image_bbox(
-            example["image"],
-            example["objects"]["bbox"],
-            example["objects"]["label"],
-            names,
-        )
+        show_rois(example["image"], example["objects"]["bbox"])
         break
