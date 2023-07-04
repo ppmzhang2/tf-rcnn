@@ -1,8 +1,8 @@
 """Risk functions."""
 import tensorflow as tf
 
-from src.rcnn import box
-from src.rcnn import cfg
+from rcnn import box
+from rcnn import cfg
 
 NEG_TH_ACGT = 0.30  # lower threshold for anchor-GT highest IoU
 POS_TH_ACGT = 0.70  # upper threshold for anchor-GT highest IoU

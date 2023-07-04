@@ -1,42 +1,30 @@
 """Model training."""
+import logging
 import os
 
+import cv2
 import tensorflow as tf
-import tensorflow_datasets as tfds
 
-from src.rcnn import cfg
-from src.rcnn.data import process_data
-from src.rcnn.model import get_rpn_model
-from src.rcnn.risk import risk_rpn_batch
+from rcnn import cfg
+from rcnn import vis
+from rcnn.data import load_test
+from rcnn.data import load_train_valid
+from rcnn.model import get_rpn_model
+from rcnn.risk import risk_rpn_batch
 
-rpn_ckpts_dir = os.path.join(cfg.MODELDIR, "rpn_ckpts")
+RPN_CKPTS_DIR = os.path.join(cfg.MODELDIR, "rpn_ckpts")
+LOGGER = logging.getLogger(__name__)
 
 # general optimizer
-# optimizer = tf.keras.optimizers.Adam()
+optimizer = tf.keras.optimizers.Adam()
 # M1 optimizer
-optimizer = tf.keras.optimizers.legacy.Adam(
-    learning_rate=0.0001,
-    beta_1=0.9,
-    beta_2=0.999,
-    epsilon=1e-08,
-)
-train_loss = tf.keras.metrics.Mean(name="train_loss")
-
-(ds_train, ds_test), ds_info = tfds.load(
-    "voc/2007",
-    split=["train", "validation"],
-    shuffle_files=True,
-    with_info=True,
-)
-
-ds_train = ds_train.map(
-    process_data,
-    num_parallel_calls=tf.data.experimental.AUTOTUNE,
-).batch(4).prefetch(tf.data.experimental.AUTOTUNE)
-ds_test = ds_test.map(
-    process_data,
-    num_parallel_calls=tf.data.experimental.AUTOTUNE,
-).batch(4).prefetch(tf.data.experimental.AUTOTUNE)
+# optimizer = tf.keras.optimizers.legacy.Adam(
+#     learning_rate=0.0001,
+#     beta_1=0.9,
+#     beta_2=0.999,
+#     epsilon=1e-08,
+# )
+loss_tr = tf.keras.metrics.Mean(name="train_loss")
 
 
 @tf.function
@@ -61,62 +49,78 @@ def train_rpn_step(
             grads,
             model.trainable_variables,
         ))
-    train_loss(loss)
+    loss_tr(loss)
 
 
-def train_rpn(
-    ds_train: tf.data.Dataset,
-    ds_test: tf.data.Dataset,
-    epochs: int,
-    save_interval: int,
-) -> None:
-    """Train RPN.
+def load_rpn_model() -> tuple[tf.keras.Model, tf.train.CheckpointManager]:
+    """Load the RPN model and the latest checkpoint manager.
 
-    Args:
-        ds_train (tf.data.Dataset): training dataset.
-        ds_test (tf.data.Dataset): testing dataset.
-        epochs (int): number of epochs.
-        save_interval (int): number of batches after which to save the model.
+    If no checkpoint is found, the model and the checkpoint manager are
+    initialized from scratch.
+
+    Returns:
+        tuple[tf.keras.Model, tf.train.CheckpointManager]: RPN model and
+            checkpoint manager.
     """
-    model = get_rpn_model()
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
-    manager = tf.train.CheckpointManager(
-        checkpoint,
-        directory=rpn_ckpts_dir,
-        max_to_keep=10,
-    )
-    if manager.latest_checkpoint:
-        checkpoint.restore(manager.latest_checkpoint)
-        print(f"Restored from {manager.latest_checkpoint}")
-    else:
-        print("Initializing from scratch.")
-
-    for ep in range(epochs):
-        # Reset the metrics at the start of the next epoch
-        train_loss.reset_states()
-        for i, (img, bx, _) in enumerate(ds_train):
-            train_rpn_step(model, img, bx)
-            print(f"Epoch {ep + 1} Batch {i + 1} "
-                  f"Training Loss {train_loss.result():.4f}")
-
-            # Save model every 'save_interval' batches
-            if i % save_interval == 0:
-                print(f"Saving checkpoint for epoch {ep + 1} at batch {i + 1}")
-                manager.save(checkpoint_number=i)
-
-
-def load_rpn_model() -> tuple[tf.keras.Model, tf.keras.Model]:
-    """Load RPN and ROI models."""
     rpn_model = get_rpn_model()
     checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=rpn_model)
     manager = tf.train.CheckpointManager(
         checkpoint,
-        directory=rpn_ckpts_dir,
+        directory=RPN_CKPTS_DIR,
         max_to_keep=10,
     )
-    checkpoint.restore(manager.latest_checkpoint)
-    return rpn_model
+
+    if manager.latest_checkpoint:
+        checkpoint.restore(manager.latest_checkpoint)
+        LOGGER.info(f"Restored from {manager.latest_checkpoint}")
+    else:
+        LOGGER.info("Initializing from scratch.")
+
+    return rpn_model, manager
 
 
-if __name__ == "__main__":
-    train_rpn(ds_train, ds_test, epochs=1, save_interval=10)
+def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
+    """Train RPN.
+
+    Args:
+        epochs (int): number of epochs.
+        save_intv (int): interval to save the model.
+        batch (int): batch size.
+    """
+    # Load model and checkpoint manager
+    model, manager = load_rpn_model()
+    # Load dataset
+    ds_tr, ds_va, ds_info = load_train_valid(cfg.DS, batch, batch)
+
+    # Training loop
+    for ep in range(epochs):
+        # Reset the metrics at the start of the next epoch
+        loss_tr.reset_states()
+        for i, (img, bx, _) in enumerate(ds_tr):
+            train_rpn_step(model, img, bx)
+            LOGGER.info(f"Epoch {ep + 1:02d} Batch {i + 1:03d} "
+                        f"Training Loss {loss_tr.result():.4f}")
+
+            # Save model every 'save_interval' batches
+            if i % save_intv == 0:
+                LOGGER.info(f"Saving checkpoint for epoch {ep + 1} "
+                            f"at batch {i + 1}")
+                manager.save(checkpoint_number=i)
+
+
+def predict_rpn(n_sample: int) -> None:
+    """Predict RPN."""
+    # Load model and checkpoint manager
+    model, manager = load_rpn_model()
+    # Load dataset
+    ds_te, ds_info = load_test(cfg.DS, n_sample, shuffle=False)
+
+    # Predict
+    img, bx, lb = next(iter(ds_te))
+    bx_roi, _, _ = model(img, training=False)  # (B, N_roi, 4)
+    for i in range(n_sample):
+        pic = vis.draw_rois(img[i], bx_roi[i])
+        cv2.imwrite(
+            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_{i:04d}.png"),
+            pic,
+        )

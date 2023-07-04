@@ -3,9 +3,9 @@ from tensorflow.keras.applications.vgg16 import VGG16
 from tensorflow.keras.layers import Input
 from tensorflow.keras.models import Model
 
-from src.rcnn import cfg
-from src.rcnn.model._proposal import ProposalBlock
-from src.rcnn.model._roi import RoiBlock
+from rcnn import cfg
+from rcnn.model._proposal import ProposalBlock
+from rcnn.model._roi import RoiBlock
 
 __all__ = [
     "get_rpn_model",

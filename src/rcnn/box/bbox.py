@@ -6,7 +6,7 @@ format: (y_min, x_min, y_max, x_max, objectness score, ...)
 """
 import tensorflow as tf
 
-from src.rcnn import cfg
+from rcnn import cfg
 
 
 def xmin(bbox: tf.Tensor) -> tf.Tensor:

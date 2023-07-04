@@ -50,6 +50,8 @@ class Config:
     MODELDIR = os.path.join(rootdir, "model_config")
 
     # data
+    DS = "voc/2007"  # dataset name
+    DS_PREFIX = "voc_2007"  # prefix for file names
     EPS = 1e-4
     STRIDE = 32
     W = 512  # original image width

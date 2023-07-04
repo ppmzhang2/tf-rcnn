@@ -1,8 +1,8 @@
 """Test Faster R-CNN `box` module."""
 import tensorflow as tf
 
-from src.rcnn.box import abs_anchors
-from src.rcnn.box import bbox
+from rcnn.box import abs_anchors
+from rcnn.box import bbox
 
 EPS = 1e-3
 

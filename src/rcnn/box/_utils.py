@@ -1,9 +1,9 @@
 """Utils of module box."""
 import tensorflow as tf
 
-from src.rcnn import cfg
-from src.rcnn.box import bbox
-from src.rcnn.box import delta
+from rcnn import cfg
+from rcnn.box import bbox
+from rcnn.box import delta
 
 
 def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:

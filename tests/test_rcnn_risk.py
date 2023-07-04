@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pytest
 import tensorflow as tf
 
-from src.rcnn import risk
+from rcnn import risk
 
 
 @dataclass
@@ -36,3 +36,18 @@ def test_risk_align_mask(data: Data) -> None:
     mask_bkg_ = risk.align_mask(data.mask_obj, data.mask_bkg)
     assert tf.reduce_all(tf.equal(mask_bkg_ * data.mask_bkg, mask_bkg_))
     assert tf.reduce_sum(mask_bkg_) == tf.reduce_sum(data.mask_obj)
+
+
+def test_risk_rpn_target_iou() -> None:
+    """Test risk.rpn_target_iou.
+
+    TODO: Add more test cases.
+    """
+    # Test for positive case
+    bx_gt = tf.constant([[10, 10, 50, 50]], dtype=tf.float32)
+    bx_ac = tf.constant(
+        [[15, 15, 45, 45], [20, 20, 35, 35]],
+        dtype=tf.float32,
+    )
+    tags, _ = risk.rpn_target_iou(bx_ac, bx_gt)
+    assert tf.reduce_all(tf.equal(tags, tf.constant([1., -1.])))
