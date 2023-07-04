@@ -6,7 +6,7 @@ format: (y_min, x_min, y_max, x_max)
 """
 import tensorflow as tf
 
-from src.rcnn import cfg
+from rcnn import cfg
 
 SQRT2 = 1.4142135624
 RATIO_HW = (

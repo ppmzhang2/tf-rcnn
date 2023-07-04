@@ -2,7 +2,8 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
 
-from src.rcnn.model import get_rpn_model
+from rcnn import cfg
+from rcnn.model import get_rpn_model
 
 
 def setup_model() -> Model:
@@ -16,16 +17,11 @@ def setup_model() -> Model:
 def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Set up the inputs / outputs."""
     b = 16  # batch size
-    inputs = tf.random.uniform((b, 512, 512, 3))  # (B, H, W, C)
+    inputs = tf.random.uniform((b, cfg.H, cfg.W, cfg.C))
     rois = tf.random.uniform((b, 10, 4))  # (B, N_rois, 4)
-    boxes = tf.random.uniform((b, 16, 16, 36))  # (B, H_feat, W_feat, 9 * 4)
-    labels = tf.random.uniform((b, 16, 16, 9))  # (B, H_feat, W_feat, 9)
-    return (
-        inputs,
-        rois,
-        tf.reshape(boxes, (b, -1, 4)),
-        tf.reshape(labels, (b, -1, 1)),
-    )
+    boxes = tf.random.uniform((b, cfg.H_FM * cfg.W_FM * cfg.N_ANCHOR, 4))
+    labels = tf.random.uniform((b, cfg.H_FM * cfg.W_FM * cfg.N_ANCHOR, 1))
+    return inputs, rois, boxes, labels
 
 
 def test_rpt_training() -> None:

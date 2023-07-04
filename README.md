@@ -26,6 +26,20 @@ set -Ux LD_LIBRARY_PATH $LD_LIBRARY_PATH $CONDA_PREFIX/lib $CUDNN_PATH/lib
 set -Ux XLA_FLAGS --xla_gpu_cuda_data_dir=$CONDA_PREFIX
 ```
 
+## Usage
+
+Train the RPN part:
+
+```bash
+tf-rcnn train-rpn --epochs=5 --save-intv=10 --batch=4
+```
+
+Predict the region of interest (ROI):
+
+```bash
+tf-rcnn predict-rpn --images=10
+```
+
 ## References
 
 - [Setup tensorflow 2.12 on casper](https://github.com/NCAR/casper_tensorflow_gpu)

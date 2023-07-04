@@ -1,7 +1,7 @@
 """Region of Interest (RoI) Block."""
 import tensorflow as tf
 
-from src.rcnn import box
+from rcnn import box
 
 
 def get_roi(

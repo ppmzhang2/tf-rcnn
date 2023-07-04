@@ -1,7 +1,8 @@
 """Preprocesses the Pascal VOC dataset for training."""
 import tensorflow as tf
+import tensorflow_datasets as tfds
 
-from src.rcnn import cfg
+from rcnn import cfg
 
 
 def ratio_resize(
@@ -137,3 +138,78 @@ def process_data(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     lbl = batch_pad(lbl[:, tf.newaxis], max_box=cfg.MAX_BOX, value=-1)
 
     return img, bbx, lbl
+
+
+def load_train_valid(
+    name: str,
+    n_tr: int,
+    n_te: int,
+) -> tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the training and validation datasets.
+
+    Args:
+        name (str): name of the dataset
+        n_tr (int): number of training samples
+        n_te (int): number of testing samples
+
+    Returns:
+        tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
+            training and validation datasets, and dataset info.
+
+    The training and validation datasets are shuffled and preprocessed with
+    `process_data`:
+        - images: [batch_size, H, W, 3]
+        - bounding boxes: [batch_size, max_box, 4] in relative
+        - labels: [batch_size, max_box, 1]
+    """
+    (ds_tr, ds_va), ds_info = tfds.load(
+        name,
+        split=["train", "validation"],
+        shuffle_files=True,
+        with_info=True,
+    )
+    ds_tr = ds_tr.map(
+        process_data,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+    ).batch(n_tr).prefetch(tf.data.experimental.AUTOTUNE)
+    ds_va = ds_va.map(
+        process_data,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+    ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
+    return ds_tr, ds_va, ds_info
+
+
+def load_test(
+    name: str,
+    n_te: int,
+    *,
+    shuffle: bool = False,
+) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the testing dataset.
+
+    Args:
+        name (str): name of the dataset
+        n_te (int): number of testing samples
+        shuffle (bool, optional): whether to shuffle the dataset. Defaults to
+            False.
+
+    Returns:
+        tuple[tf.data.Dataset, tfds.core.DatasetInfo]: testing dataset and
+            dataset info.
+
+    The testing dataset is preprocessed with `process_data`:
+        - images: [batch_size, H, W, 3]
+        - bounding boxes: [batch_size, max_box, 4] in relative
+        - labels: [batch_size, max_box, 1]
+    """
+    ds_te, ds_info = tfds.load(
+        name,
+        split="validation",
+        shuffle_files=shuffle,
+        with_info=True,
+    )
+    ds_te = ds_te.map(
+        process_data,
+        num_parallel_calls=tf.data.experimental.AUTOTUNE,
+    ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
+    return ds_te, ds_info

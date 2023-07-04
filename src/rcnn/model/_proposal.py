@@ -2,7 +2,7 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Conv2D
 
-from src.rcnn import cfg
+from rcnn import cfg
 
 
 class ProposalBlock(tf.keras.Model):

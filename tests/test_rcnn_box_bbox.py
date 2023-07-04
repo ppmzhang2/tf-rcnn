@@ -2,7 +2,7 @@
 import pytest
 import tensorflow as tf
 
-from src.rcnn import box
+from rcnn import box
 
 EPS = 1e-3
 BBOX1 = (0.0, 0.4, 5.0, 6.4)
@@ -39,7 +39,8 @@ def test_box_bbox_trans_random(bx: tf.Tensor) -> None:
     assert tf.get_static_value(tf.reduce_all(tf.math.abs(res - bx) < EPS))
 
 
-def test_box_bbox_clip():
+def test_box_bbox_clip() -> None:
+    """Test `bbox.clip`."""
     # Create a bounding box tensor
     bbox = tf.constant([
         [10.0, 10.0, 30.0, 30.0, 0.6],  # within
