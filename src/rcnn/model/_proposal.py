@@ -5,7 +5,7 @@ from tensorflow.keras.layers import Conv2D
 from rcnn import cfg
 
 
-class ProposalBlock(tf.keras.Model):
+class ProposalBlock(tf.keras.layers.Layer):
     """Region Proposal Block.
 
     It accepts a feature map from a backbone network as input and outputs
@@ -20,21 +20,29 @@ class ProposalBlock(tf.keras.Model):
         """
         super().__init__(**kwargs)
 
+        _init = tf.random_normal_initializer(mean=0.0, stddev=0.01)
+        _regu = tf.keras.regularizers.l2(0.0005)
+
         # R-CNN paper uses 512 filters for the VGG backbone
         self._conv2d = Conv2D(
             512,
             (3, 3),
+            kernel_initializer=_init,
             padding="same",
             activation="relu",
             name="rpn_conv",
         )
         # Regression layer for the bounding box coordinates
         self.reg_layer = Conv2D(cfg.N_ANCHOR * 4, (1, 1),
-                                activation="linear",
+                                kernel_initializer=_init,
+                                kernel_regularizer=_regu,
+                                activation=None,
                                 name="rpn_bbox")
         # Classification layer to predict the foreground or background
         self.cls_layer = Conv2D(cfg.N_ANCHOR, (1, 1),
-                                activation="sigmoid",
+                                kernel_initializer=_init,
+                                kernel_regularizer=_regu,
+                                activation=None,
                                 name="rpn_cls")
 
     def call(self, inputs: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:

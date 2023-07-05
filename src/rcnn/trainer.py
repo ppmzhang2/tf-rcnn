@@ -41,8 +41,8 @@ def train_rpn_step(
         bx_gt (tf.Tensor): ground truth boxes (B, N_gt, 4)
     """
     with tf.GradientTape() as tape:
-        bx_roi, bx_del, logits = model(images, training=True)
-        loss = risk_rpn_batch(bx_del, logits, bx_roi, bx_gt)
+        _, logits, _, roi_box = model(images, training=True)
+        loss = risk_rpn_batch(logits, roi_box, bx_gt)
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(
         zip(  # noqa: B905
@@ -117,10 +117,10 @@ def predict_rpn(n_sample: int) -> None:
 
     # Predict
     img, bx, lb = next(iter(ds_te))
-    bx_roi, _, _ = model(img, training=False)  # (B, N_roi, 4)
+    sup_box, _, _, _ = model(img, training=False)  # (B, N_roi, 4)
     for i in range(n_sample):
-        pic = vis.draw_rois(img[i], bx_roi[i])
+        pic = vis.draw_rois(img[i], sup_box[i])
         cv2.imwrite(
-            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_{i:04d}.png"),
-            pic,
+            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_{i:04d}.jpg"),
+            pic * 255.0,
         )
