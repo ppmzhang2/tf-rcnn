@@ -4,84 +4,66 @@ import tensorflow as tf
 from rcnn import box
 
 
-def get_roi(
-    rpn_prob: tf.Tensor,
-    rpn_del: tf.Tensor,
-    n_score: int,
-    n_nms: int,
-    nms_th: float,
-) -> tf.Tensor:
+def get_roi(rpn_del: tf.Tensor) -> tf.Tensor:
     """Get proposed Region of Interests (RoIs) of a single image.
 
     Args:
-        rpn_prob (tf.Tensor): RPN classification predictions.
-            Shape [N_ac, 1].
         rpn_del (tf.Tensor): RPN bounding box delta predictions.
-            Shape [N_ac, 4].
-        n_score (int): number of top scores to keep.
-        n_nms (int): number of RoIs to keep after NMS.
-        nms_th (float): NMS threshold.
+            Shape [N_val_ac, 4].
 
     Returns:
         tf.Tensor: proposed Region of Interests (RoIs).
     """
-    scores = tf.squeeze(rpn_prob, axis=-1)  # (N_ac,)
-    top_score_idx = tf.math.top_k(scores, k=n_score).indices
-    top_score = tf.gather(scores, top_score_idx)  # (n_score,)
-    top_delta = tf.gather(rpn_del, top_score_idx)  # (n_score, 4)
-    top_ac = tf.gather(box.anchors, top_score_idx)  # (n_score, 4)
-    rois_all = box.bbox2delta(top_ac, top_delta)  # (n_score, 4)
-    # clip
-    rois = box.bbox.clip(rois_all, 1., 1.)  # (n_score, 4)
-    # nms
-    nms_idx = tf.image.non_max_suppression(rois, top_score, n_nms,
-                                           nms_th)  # (n_nms,)
-    rois = tf.gather(rois, nms_idx)  # (n_nms, 4)
+    # Buffer to clip the RoIs. Defaults to 1e-1.
+    buffer = 1e-1
+    ac_val = tf.constant(box.val_anchors, dtype=tf.float32)  # (N_val_ac, 4)
+    rois = box.delta2bbox(ac_val, rpn_del)  # (N_val_ac, 4)
+    rois = tf.clip_by_value(rois, -buffer, 1. + buffer)  # (B, n_val, 4)
     return rois
 
 
-class RoiBlock(tf.keras.Model):
-    """RoI Block.
+class RoiBlock(tf.keras.layers.Layer):
+    """Region of Interest (RoI) Block.
 
-    It receives the RPN class and bounding box predictions and produces Region
-    of Interests (RoI).
+    It receives the RPN class and bounding box offset predictions and produces
+    transformed results based on valid anchor masks.
     """
 
-    def __init__(self, n_score: int, n_nms: int, nms_th: float, **kwargs):
-        """Initialize the Block.
-
-        Args:
-            n_score (int): number of top scores to keep.
-            n_nms (int): number of RoIs to keep after NMS.
-            nms_th (float): NMS threshold.
-            kwargs: Other keyword arguments passed to the parent class.
-        """
+    def __init__(self, **kwargs):
+        """Initialize the Block."""
         super().__init__(**kwargs)
-        self._n_score = n_score
-        self._n_nms = n_nms
-        self._nms_th = nms_th
 
-    def call(self, rpn_prob: tf.Tensor, rpn_del: tf.Tensor) -> tf.Tensor:
-        """Get proposed Region of Interests (RoIs) of a batch of images.
+    def call(
+        self,
+        rpn_cls: tf.Tensor,
+        rpn_del: tf.Tensor,
+    ) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Get Region of Interests (RoIs) of a batch of images.
 
         Args:
-            rpn_prob (tf.Tensor): RPN classification predictions.
+            rpn_cls (tf.Tensor): RPN classification predictions.
                 Shape [B, N_ac, 1].
             rpn_del (tf.Tensor): RPN bounding box delta predictions.
                 Shape [B, N_ac, 4].
 
         Returns:
-            tf.Tensor: proposed Region of Interests (RoIs) [B, n_nms, 4]
+            tuple[tf.Tensor, tf.Tensor, tf.Tensor]: RPN classification,
+                bounding box delta, and RoIs. All are filtered by valid anchor
+                masks.
         """
-        rois = tf.map_fn(
-            lambda x: get_roi(
-                x[0],
-                x[1],
-                self._n_score,
-                self._n_nms,
-                self._nms_th,
-            ),
-            (rpn_prob, rpn_del),
+        rpn_cls_val = tf.map_fn(
+            lambda x: x[box.val_anchor_mask == 1],
+            rpn_cls,
+            fn_output_signature=tf.TensorSpec([None, 1], tf.float32),
+        )  # (B, n_val_ac, 1)
+        rpn_del_val = tf.map_fn(
+            lambda x: x[box.val_anchor_mask == 1],
+            rpn_del,
             fn_output_signature=tf.TensorSpec([None, 4], tf.float32),
-        )
-        return rois
+        )  # (B, n_val_ac, 4)
+        rois = tf.map_fn(
+            get_roi,
+            rpn_del_val,
+            fn_output_signature=tf.TensorSpec([None, 4], tf.float32),
+        )  # (B, n_val_ac, 4)
+        return rpn_cls_val, rpn_del_val, rois

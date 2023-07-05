@@ -1,16 +1,20 @@
 """Box Module."""
 from rcnn.box import bbox
 from rcnn.box import delta
-from rcnn.box._anchor import abs_anchors
-from rcnn.box._anchor import anchors
+from rcnn.box._anchor import all_anchors
+from rcnn.box._anchor import grid_anchor
+from rcnn.box._anchor import val_anchor_mask
+from rcnn.box._anchor import val_anchors
 from rcnn.box._utils import bbox2delta
 from rcnn.box._utils import delta2bbox
 
 __all__ = [
     "bbox",
     "delta",
-    "abs_anchors",
-    "anchors",
+    "all_anchors",
+    "grid_anchor",
+    "val_anchor_mask",
+    "val_anchors",
     "bbox2delta",
     "delta2bbox",
 ]

@@ -9,27 +9,6 @@ POS_TH_ACGT = 0.70  # upper threshold for anchor-GT highest IoU
 NEG_TH_GTAC = 0.15  # lower threshold for GT-anchor highest IoU
 
 
-def valid_ac_mask(ac: tf.Tensor) -> tf.Tensor:
-    """Get valid anchors mask based on image size.
-
-    Args:
-        ac (tf.Tensor): anchor tensor (N, 4) in relative coordinates
-        h (float): height of the image
-        w (float): width of the image
-
-    Returns:
-        tf.Tensor: 0/1 mask of valid anchors (N,) of type tf.float32
-    """
-    return tf.where(
-        (box.bbox.xmin(ac) >= 0) & (box.bbox.ymin(ac) >= 0)
-        & (box.bbox.xmax(ac) >= box.bbox.xmin(ac))
-        & (box.bbox.ymax(ac) >= box.bbox.ymin(ac))
-        & (box.bbox.xmax(ac) <= 1) & (box.bbox.ymax(ac) <= 1),
-        1.0,
-        0.0,
-    )
-
-
 def align_mask(mask_obj: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
     """Align background mask with object mask.
 
@@ -150,42 +129,46 @@ def rpn_target(bx_gt: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
 
     Returns:
         tuple[tf.Tensor, tf.Tensor, tf.Tensor]: object mask (N_ac,),
-            background mask (N_ac,), and target deltas (N_ac, 4)
+            background mask (N_ac,), and target RoI boxes (N_ac, 4)
     """
-    tags, bx_tgt = rpn_target_iou(box.anchors, bx_gt)
+    tags, bx_tgt = rpn_target_iou(
+        tf.constant(box.val_anchors, dtype=tf.float32),
+        bx_gt,
+    )
     # print(f"{bx_tgt[200:205]=}")  # -2.0 or -1.0
-    # print(f"{box.anchors[200:205]=}")  # normal
-    delta_tgt = box.bbox2delta(bx_tgt, box.anchors)
-    mask_valid = valid_ac_mask(box.anchors)
-    mask_obj = tf.cast(tags > 0, tf.float32) * mask_valid
-    mask_bkg_all = tf.cast(tags < 0, tf.float32) * mask_valid
+    mask_obj = tf.cast(tags > 0, tf.float32)
+    mask_bkg_all = tf.cast(tags < 0, tf.float32)
     # randomly select background anchors with same number of objects
     mask_bkg = align_mask(mask_obj, mask_bkg_all)
-    return mask_obj, mask_bkg, delta_tgt
+    return mask_obj, mask_bkg, bx_tgt
 
 
 def risk_rpn_reg(
-    bx_del: tf.Tensor,
+    bx_prd: tf.Tensor,
     bx_tgt: tf.Tensor,
     mask: tf.Tensor,
 ) -> tf.Tensor:
-    """Delta regression risk for RPN with smooth L1 loss.
+    """Delta / RoI regression risk for RPN with smooth L1 loss.
 
     `bx` values cannot be `inf` or `-inf` otherwise the loss will be `nan`.
 
     Args:
-        bx_del (tf.Tensor): predicted deltas (N_ac, 4)
-        bx_tgt (tf.Tensor): target deltas (N_ac, 4)
+        bx_prd (tf.Tensor): predicted box (N_ac, 4); could be predicted deltas
+            or RoIs
+        bx_tgt (tf.Tensor): target box (N_ac, 4); could be target deltas or
+            ground truth boxes
         mask (tf.Tensor): 0/1 object mask (N_ac,)
 
     Returns:
         tf.Tensor: risk (scalar)
     """
     fn_huber = tf.keras.losses.Huber(reduction="none")
-    loss = fn_huber(bx_tgt, bx_del)  # (N_ac,)
-    # print(bx_del[:5])  # normal
-    # print(bx_tgt[:5])  # dw, dh = -inf
-    return tf.reduce_sum(loss * mask) / (tf.reduce_sum(mask) + cfg.EPS)
+    prd = tf.boolean_mask(bx_prd, mask)  # (N_obj, 4)
+    tgt = tf.boolean_mask(bx_tgt, mask)  # (N_obj, 4)
+    loss = fn_huber(tgt, prd)  # (N_obj,)
+    # print(prd[:5])  # normal
+    # print(tgt[:5])  # dw, dh = -inf
+    return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + cfg.EPS)
 
 
 def risk_rpn_obj(logits: tf.Tensor, mask_obj: tf.Tensor) -> tf.Tensor:
@@ -202,8 +185,10 @@ def risk_rpn_obj(logits: tf.Tensor, mask_obj: tf.Tensor) -> tf.Tensor:
         from_logits=True,
         reduction="none",
     )
-    loss = bce(mask_obj[:, tf.newaxis], logits)  # (N_ac,)
-    return tf.reduce_sum(loss * mask_obj) / (tf.reduce_sum(mask_obj) + cfg.EPS)
+    prd = tf.boolean_mask(logits, mask_obj)  # (N_obj, 1)
+    tgt = tf.ones_like(prd)
+    loss = bce(tgt, prd)  # (N_obj,)
+    return tf.reduce_sum(loss) / (tf.reduce_sum(mask_obj) + cfg.EPS)
 
 
 def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
@@ -220,27 +205,13 @@ def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
         from_logits=True,
         reduction="none",
     )
-    loss = bce(1.0 - mask_bkg[:, tf.newaxis], logits)  # (N_ac,)
-    return tf.reduce_sum(loss * mask_bkg) / (tf.reduce_sum(mask_bkg) + cfg.EPS)
-
-
-def risk_roi_area(bx_roi: tf.Tensor, th: float = 0.01) -> tf.Tensor:
-    """Penalize RoIs with area smaller than the threshold.
-
-    Args:
-        bx_roi (tf.Tensor): RoI boxes (N_roi, 4)
-        th (float, optional): threshold. Defaults to 0.01.
-
-    Returns:
-        tf.Tensor: risk (scalar)
-    """
-    area = box.bbox.area(bx_roi)  # (N_roi,)
-    mask = tf.cast(area < th, tf.float32)
-    return tf.reduce_sum(mask) / (tf.reduce_sum(mask) + cfg.EPS)
+    prd = tf.boolean_mask(logits, mask_bkg)  # (N_bkg, 1)
+    tgt = tf.zeros_like(prd)  # (N_bkg, 1)
+    loss = bce(tgt, prd)  # (N_bkg,)
+    return tf.reduce_sum(loss) / (tf.reduce_sum(mask_bkg) + cfg.EPS)
 
 
 def risk_rpn(
-    bx_del: tf.Tensor,
     logits: tf.Tensor,
     bx_roi: tf.Tensor,
     bx_gt: tf.Tensor,
@@ -248,9 +219,8 @@ def risk_rpn(
     """RPN risk of a single image.
 
     Args:
-        bx_del (tf.Tensor): predicted deltas (N_ac, 4)
         logits (tf.Tensor): predicted logits (N_ac, 1)
-        bx_roi (tf.Tensor): RoI boxes (N_roi, 4)
+        bx_roi (tf.Tensor): predicted RoI boxes (N_ac, 4)
         bx_gt (tf.Tensor): ground truth boxes (N_gt, 4)
 
     Returns:
@@ -258,15 +228,13 @@ def risk_rpn(
     """
     mask_obj, mask_bkg, bx_tgt = rpn_target(bx_gt)
     # print(tf.reduce_sum(mask_obj), tf.reduce_sum(mask_bkg))  # > 0
-    risk_reg = risk_rpn_reg(bx_del, bx_tgt, mask_obj)
+    risk_reg = risk_rpn_reg(bx_roi, bx_tgt, mask_obj)
     risk_obj = risk_rpn_obj(logits, mask_obj)
     risk_bkg = risk_rpn_bkg(logits, mask_bkg)
-    risk_roi = risk_roi_area(bx_roi)
-    return risk_reg + risk_obj + risk_bkg + risk_roi
+    return risk_reg + risk_obj + risk_bkg
 
 
 def risk_rpn_batch(
-    bx_del: tf.Tensor,
     logits: tf.Tensor,
     bx_roi: tf.Tensor,
     bx_gt: tf.Tensor,
@@ -274,17 +242,16 @@ def risk_rpn_batch(
     """RPN risk of a batch of images.
 
     Args:
-        bx_del (tf.Tensor): predicted deltas (N, N_ac, 4)
         logits (tf.Tensor): predicted logits (N, N_ac, 1)
-        bx_roi (tf.Tensor): RoI boxes (N, N_roi, 4)
+        bx_roi (tf.Tensor): RoI boxes (N, N_ac, 4)
         bx_gt (tf.Tensor): ground truth boxes (N, N_gt, 4)
 
     Returns:
         tf.Tensor: risk (scalar)
     """
     risk = tf.map_fn(
-        lambda x: risk_rpn(x[0], x[1], x[2], x[3]),
-        (bx_del, logits, bx_roi, bx_gt),
+        lambda x: risk_rpn(x[0], x[1], x[2]),
+        (logits, bx_roi, bx_gt),
         fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
     )
     return tf.reduce_mean(risk)
