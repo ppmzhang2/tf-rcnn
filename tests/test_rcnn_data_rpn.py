@@ -1,17 +1,17 @@
-"""Test Faster R-CNN risk functions."""
+"""Test data.rpn module."""
 from dataclasses import dataclass
 
 import pytest
 import tensorflow as tf
 
-from rcnn import risk
+from rcnn.data import rpn
 
 
 @dataclass
 class Data:
     """Data for testing."""
-    mask_obj: tf.Tensor
-    mask_bkg: tf.Tensor
+    mask: tf.Tensor
+    num: int
 
 
 def rand_mask(n_total: int, n_one: int) -> tf.Tensor:
@@ -28,18 +28,19 @@ def rand_mask(n_total: int, n_one: int) -> tf.Tensor:
 
 
 @pytest.mark.parametrize("data", [
-    Data(mask_obj=rand_mask(100, 5), mask_bkg=rand_mask(100, 20)),
-    Data(mask_obj=rand_mask(1000, 10), mask_bkg=rand_mask(1000, 40)),
+    Data(mask=rand_mask(100, 5), num=5),
+    Data(mask=rand_mask(1000, 20), num=20),
 ])
-def test_risk_align_mask(data: Data) -> None:
+def test_data_rpn_sample_mask(data: Data) -> None:
     """Test risk.align_mask."""
-    mask_bkg_ = risk.align_mask(data.mask_obj, data.mask_bkg)
-    assert tf.reduce_all(tf.equal(mask_bkg_ * data.mask_bkg, mask_bkg_))
-    assert tf.reduce_sum(mask_bkg_) == tf.reduce_sum(data.mask_obj)
+    mask_orig = rpn._sample_mask(data.mask, data.num)
+    assert tf.reduce_all(tf.equal(mask_orig, data.mask))
+    mask_samp = rpn._sample_mask(data.mask, data.num - 1)
+    assert tf.reduce_sum(mask_samp) == data.num - 1
 
 
-def test_risk_rpn_target_iou() -> None:
-    """Test risk.rpn_target_iou.
+def test_data_rpn_get_gt_box() -> None:
+    """Test rpn._get_gt_box.
 
     TODO: Add more test cases.
     """
@@ -49,5 +50,7 @@ def test_risk_rpn_target_iou() -> None:
         [[15, 15, 45, 45], [20, 20, 35, 35]],
         dtype=tf.float32,
     )
-    tags, _ = risk.rpn_target_iou(bx_ac, bx_gt)
-    assert tf.reduce_all(tf.equal(tags, tf.constant([1., -1.])))
+    exp = tf.constant([[10, 10, 50, 50], [-1, -1, -1, -1]], dtype=tf.float32)
+
+    bx_tgt = rpn._get_gt_box(bx_ac, bx_gt)
+    assert tf.reduce_all(tf.equal(bx_tgt, exp))

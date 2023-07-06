@@ -14,14 +14,11 @@ __all__ = [
 
 
 def get_rpn_model() -> Model:
-    n_score = 300
-    n_nms = 30
-    nms_th = 0.7
     layer_in = Input(shape=(cfg.H, cfg.W, cfg.C))
     vgg_block = VGG16(include_top=False)
     rpn_block = ProposalBlock()
     roi_block = RoiBlock()
-    sup_block = SuppressBlock(n_score, n_nms, nms_th)
+    sup_block = SuppressBlock(cfg.N_SUPP_SCORE, cfg.N_SUPP_NMS, cfg.NMS_TH)
     feature_map = vgg_block(layer_in)
     rpn_del, rpn_cls = rpn_block(feature_map)
     roi_cls, roi_del, roi_box = roi_block(rpn_cls, rpn_del)
