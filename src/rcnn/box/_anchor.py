@@ -140,7 +140,7 @@ def anchor_all() -> np.ndarray:
     """Get ALL flattened anchor tensor in relative coordinates.
 
     Returns:
-        np.ndarray: anchor (N_ac, 4) of format (y_min, x_min, y_max, x_max)
+        np.ndarray: anchor (N_all_ac, 4) of format (y_min, x_min, y_max, x_max)
     """
     _mat_trans = np.array([
         [1. / cfg.H, 0., 0., 0.],
@@ -155,10 +155,10 @@ def anchor_all() -> np.ndarray:
     return np.matmul(ac_abs, _mat_trans)
 
 
-# flattened relative anchors (N_ac, 4)
+# flattened relative anchors (N_all_ac, 4)
 all_anchors = anchor_all()
 
-# valid anchors mask based on image size of type np.float32 (N_ac,)
+# valid anchors mask based on image size of type np.float32 (N_all_ac,)
 val_anchor_mask = np.where(
     (bbox.xmin(all_anchors) >= 0) & (bbox.ymin(all_anchors) >= 0)
     & (bbox.xmax(all_anchors) >= bbox.xmin(all_anchors))
@@ -168,8 +168,11 @@ val_anchor_mask = np.where(
     0.0,
 )
 
-# valid anchors (<N_ac, 4)
+# valid anchors (N_ac, 4)
 val_anchors = all_anchors[val_anchor_mask == 1]
+
+# number of valid anchors
+n_val_anchors = int(val_anchor_mask.sum())
 
 # set as read-only
 all_anchors.flags.writeable = False

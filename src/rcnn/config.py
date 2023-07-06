@@ -49,10 +49,12 @@ class Config:
     DATADIR = os.path.join(rootdir, "data")
     MODELDIR = os.path.join(rootdir, "model_config")
 
-    # data
+    # training
     DS = "voc/2007"  # dataset name
     DS_PREFIX = "voc_2007"  # prefix for file names
     EPS = 1e-4
+
+    # model
     STRIDE = 32
     W = 512  # original image width
     H = 512  # original image height
@@ -61,6 +63,9 @@ class Config:
     H_FM = H // STRIDE  # feature map height
     N_ANCHOR = 9  # number of anchors per grid cell
     MAX_BOX = 20
+    N_SUPP_SCORE = 300  # number of boxes to keep after score suppression
+    N_SUPP_NMS = 10  # number of boxes to keep after nms
+    NMS_TH = 0.7  # nms threshold
 
 
 class TestConfig(Config):

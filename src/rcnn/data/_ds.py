@@ -101,8 +101,8 @@ def batch_pad(
     return tensor
 
 
-def process_data(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Prepares a sample for training.
+def ds_handler(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Preprocesses a sample from the dataset.
 
     Args:
         sample (dict): sample from the dataset
@@ -157,7 +157,7 @@ def load_train_valid(
             training and validation datasets, and dataset info.
 
     The training and validation datasets are shuffled and preprocessed with
-    `process_data`:
+    `ds_handler`:
         - images: [batch_size, H, W, 3]
         - bounding boxes: [batch_size, max_box, 4] in relative
         - labels: [batch_size, max_box, 1]
@@ -169,11 +169,11 @@ def load_train_valid(
         with_info=True,
     )
     ds_tr = ds_tr.map(
-        process_data,
+        ds_handler,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     ).batch(n_tr).prefetch(tf.data.experimental.AUTOTUNE)
     ds_va = ds_va.map(
-        process_data,
+        ds_handler,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
     return ds_tr, ds_va, ds_info
@@ -197,7 +197,7 @@ def load_test(
         tuple[tf.data.Dataset, tfds.core.DatasetInfo]: testing dataset and
             dataset info.
 
-    The testing dataset is preprocessed with `process_data`:
+    The testing dataset is preprocessed with `ds_handler`:
         - images: [batch_size, H, W, 3]
         - bounding boxes: [batch_size, max_box, 4] in relative
         - labels: [batch_size, max_box, 1]
@@ -209,7 +209,7 @@ def load_test(
         with_info=True,
     )
     ds_te = ds_te.map(
-        process_data,
+        ds_handler,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
     return ds_te, ds_info

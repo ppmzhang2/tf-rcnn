@@ -6,11 +6,10 @@ import cv2
 import tensorflow as tf
 
 from rcnn import cfg
+from rcnn import data
 from rcnn import vis
-from rcnn.data import load_test
-from rcnn.data import load_train_valid
 from rcnn.model import get_rpn_model
-from rcnn.risk import risk_rpn_batch
+from rcnn.risk import risk_rpn
 
 RPN_CKPTS_DIR = os.path.join(cfg.MODELDIR, "rpn_ckpts")
 LOGGER = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ optimizer = tf.keras.optimizers.Adam()
 loss_tr = tf.keras.metrics.Mean(name="train_loss")
 
 
-@tf.function
+# @tf.function
 def train_rpn_step(
     model: tf.keras.Model,
     images: tf.Tensor,
@@ -42,7 +41,10 @@ def train_rpn_step(
     """
     with tf.GradientTape() as tape:
         _, logits, _, roi_box = model(images, training=True)
-        loss = risk_rpn_batch(logits, roi_box, bx_gt)
+        bx_tgt = data.rpn.get_gt_box(bx_gt)
+        mask_obj = data.rpn.get_gt_mask(bx_tgt, bkg=False)
+        mask_bkg = data.rpn.get_gt_mask(bx_tgt, bkg=True)
+        loss = risk_rpn(roi_box, bx_tgt, logits, mask_obj, mask_bkg)
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(
         zip(  # noqa: B905
@@ -90,7 +92,7 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
     # Load model and checkpoint manager
     model, manager = load_rpn_model()
     # Load dataset
-    ds_tr, ds_va, ds_info = load_train_valid(cfg.DS, batch, batch)
+    ds_tr, ds_va, ds_info = data.load_train_valid(cfg.DS, batch, batch)
 
     # Training loop
     for ep in range(epochs):
@@ -113,7 +115,7 @@ def predict_rpn(n_sample: int) -> None:
     # Load model and checkpoint manager
     model, manager = load_rpn_model()
     # Load dataset
-    ds_te, ds_info = load_test(cfg.DS, n_sample, shuffle=False)
+    ds_te, ds_info = data.load_test(cfg.DS, n_sample, shuffle=False)
 
     # Predict
     img, bx, lb = next(iter(ds_te))
