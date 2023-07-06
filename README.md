@@ -31,14 +31,18 @@ set -Ux XLA_FLAGS --xla_gpu_cuda_data_dir=$CONDA_PREFIX
 Train the RPN part:
 
 ```bash
-tf-rcnn train-rpn --epochs=5 --save-intv=10 --batch=4
+tf-rcnn train-rpn --epochs=5 --save-intv=10 --batch=32
 ```
 
 Predict the region of interest (ROI):
 
 ```bash
-tf-rcnn predict-rpn --images=10
+tf-rcnn predict-rpn --images=20
 ```
+
+Result of the ROI prediction after 5 epochs:
+
+![ROI prediction](img/voc_2007_test_rpn_0017.jpg)
 
 ## References
 

@@ -15,14 +15,12 @@ RPN_CKPTS_DIR = os.path.join(cfg.MODELDIR, "rpn_ckpts")
 LOGGER = logging.getLogger(__name__)
 
 # general optimizer
-optimizer = tf.keras.optimizers.Adam()
-# M1 optimizer
-# optimizer = tf.keras.optimizers.legacy.Adam(
-#     learning_rate=0.0001,
-#     beta_1=0.9,
-#     beta_2=0.999,
-#     epsilon=1e-08,
-# )
+optimizer = tf.keras.optimizers.Adam(
+    learning_rate=0.0001,
+    beta_1=0.9,
+    beta_2=0.999,
+    epsilon=1e-08,
+)
 loss_tr = tf.keras.metrics.Mean(name="train_loss")
 
 
@@ -46,6 +44,13 @@ def train_rpn_step(
         mask_bkg = data.rpn.get_gt_mask(bx_tgt, bkg=True)
         loss = risk_rpn(roi_box, bx_tgt, logits, mask_obj, mask_bkg)
     grads = tape.gradient(loss, model.trainable_variables)
+    # check NaN
+    for grad in grads:
+        if tf.math.reduce_any(tf.math.is_nan(grad)):
+            msg = "NaN gradient detected."
+            raise ValueError(msg)
+    # clip gradient
+    grads, _ = tf.clip_by_global_norm(grads, 5.0)
     optimizer.apply_gradients(
         zip(  # noqa: B905
             grads,
@@ -123,6 +128,21 @@ def predict_rpn(n_sample: int) -> None:
     for i in range(n_sample):
         pic = vis.draw_rois(img[i], sup_box[i])
         cv2.imwrite(
-            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_{i:04d}.jpg"),
+            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_rpn_{i:04d}.jpg"),
+            pic * 255.0,
+        )
+
+
+def show_gt(n_sample: int) -> None:
+    """Predict RPN."""
+    # Load dataset
+    ds_te, ds_info = data.load_test(cfg.DS, n_sample, shuffle=False)
+    names = ds_info.features["objects"]["label"].names
+
+    img, bx, lb = next(iter(ds_te))
+    for i in range(n_sample):
+        pic = vis.draw_pred(img[i], bx[i], lb[i], names)
+        cv2.imwrite(
+            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_gt_{i:04d}.jpg"),
             pic * 255.0,
         )
