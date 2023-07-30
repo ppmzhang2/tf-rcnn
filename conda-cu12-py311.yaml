@@ -1,4 +1,4 @@
-name: tf-rcnn-cu12-py311
+name: py311-cu12-tfrcnn
 channels:
   - conda-forge
   - nvidia

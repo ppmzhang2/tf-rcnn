@@ -1,4 +1,4 @@
-name: conda-apple-py311
+name: py311-apple-tfrcnn
 channels:
   - apple
   - conda-forge
