@@ -14,7 +14,7 @@ conda env create -f conda-apple-py311.yaml
 Uninstall:
 
 ```bash
-conda env remove --name tf-rcnn-cu11-py310 --all
+conda env remove --name py311-apple-tfrcnn
 ```
 
 Note that environment variables such as `LD_LIBRARY_PATH` must be set properly
