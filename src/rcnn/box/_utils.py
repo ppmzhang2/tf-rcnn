@@ -12,18 +12,19 @@ def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
     e.g.: anchor (base) + delta (diff) = predicted (bbox)
 
     Args:
-        base (tf.Tensor): base bbox tensor of shape (N1, N2, ..., Nk, C)
-        diff (tf.Tensor): delta tensor of shape (N1, N2, ..., Nk, C)
+        base (tf.Tensor): base bbox tensor of shape (N1, N2, ..., Nk, 4)
+
+        diff (tf.Tensor): delta tensor of shape (N1, N2, ..., Nk, 4)
 
     Returns:
-        tf.Tensor: bbox tensor of shape (N1, N2, ..., Nk, C) where C >= 4
+        tf.Tensor: bbox tensor of shape (N1, N2, ..., Nk, 4)
     """
     xctr_ = bbox.xctr(base) + bbox.w(base) * delta.dx(diff)
     yctr_ = bbox.yctr(base) + bbox.h(base) * delta.dy(diff)
     w_ = bbox.w(base) * tf.exp(delta.dw(diff))
     h_ = bbox.h(base) * tf.exp(delta.dh(diff))
     xywh_ = tf.stack([xctr_, yctr_, w_, h_], axis=-1)
-    return bbox.from_xywh(tf.concat([xywh_, bbox.rem(base)], axis=-1))
+    return bbox.from_xywh(xywh_)
 
 
 def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:

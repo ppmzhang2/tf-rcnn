@@ -30,7 +30,7 @@ def test_box_bbox_trans() -> None:
 
 @pytest.mark.parametrize("bx", [
     tf.random.uniform((4, 3, 9, 4)),
-    tf.random.uniform((15, 11, 9, 6)),
+    tf.random.uniform((15, 11, 9, 4)),
 ])
 def test_box_bbox_trans_random(bx: tf.Tensor) -> None:
     """Test `bbox.from_xywh` and `bbox.to_xywh`."""

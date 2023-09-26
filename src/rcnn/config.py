@@ -21,7 +21,7 @@ class Config:
         """Configure logging."""
         dictConfig({
             "version": 1,
-            "disable_existing_loggers": False,
+            "disable_existing_loggers": True,  # Disable other existing loggers
             "formatters": {
                 "stdout_formatter": {
                     "format": cls.LOG_LINE_FORMAT,
@@ -40,7 +40,8 @@ class Config:
                 root_module_name: {
                     "handlers": ["stdout_handler"],
                     "level": cls.LOG_LEVEL,
-                    "propagate": True,
+                    # Prevent msg from being propagated to the parent logger
+                    "propagate": False,
                 },
             },
         })
