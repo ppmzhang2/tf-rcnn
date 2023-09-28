@@ -7,7 +7,6 @@ format: (y_min, x_min, y_max, x_max)
 import numpy as np
 
 from rcnn import cfg
-from rcnn.box import bbox
 
 
 def _scales(x: int) -> tuple[int, int, int]:
@@ -160,10 +159,12 @@ all_anchors = anchor_all()
 
 # valid anchors mask based on image size of type np.float32 (N_all_ac,)
 val_anchor_mask = np.where(
-    (bbox.xmin(all_anchors) >= 0) & (bbox.ymin(all_anchors) >= 0)
-    & (bbox.xmax(all_anchors) >= bbox.xmin(all_anchors))
-    & (bbox.ymax(all_anchors) >= bbox.ymin(all_anchors))
-    & (bbox.xmax(all_anchors) <= 1) & (bbox.ymax(all_anchors) <= 1),
+    (all_anchors[..., 0] >= 0) &  # y_min >= 0
+    (all_anchors[..., 1] >= 0) &  # x_min >= 0
+    (all_anchors[..., 2] <= 1) &  # y_max <= 1
+    (all_anchors[..., 3] <= 1) &  # x_max <= 1
+    (all_anchors[..., 2] > all_anchors[..., 0]) &  # y_max > y_min
+    (all_anchors[..., 3] > all_anchors[..., 1]),  # x_max > x_min
     1.0,
     0.0,
 )

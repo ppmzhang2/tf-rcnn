@@ -4,24 +4,23 @@ from tensorflow.keras.layers import Input
 from tensorflow.keras.models import Model
 
 from rcnn import cfg
-from rcnn.model._proposal import ProposalBlock
-from rcnn.model._roi import RoiBlock
-from rcnn.model._suppress import SuppressBlock
+from rcnn.model._roi import roi
+from rcnn.model._rpn import rpn
+from rcnn.model._suppress import suppress
 
 __all__ = [
     "get_rpn_model",
 ]
 
+vgg = VGG16(include_top=False)
+
 
 def get_rpn_model() -> Model:
     layer_in = Input(shape=(cfg.H, cfg.W, cfg.C))
-    vgg_block = VGG16(include_top=False)
-    rpn_block = ProposalBlock()
-    roi_block = RoiBlock()
-    sup_block = SuppressBlock(cfg.N_SUPP_SCORE, cfg.N_SUPP_NMS, cfg.NMS_TH)
-    feature_map = vgg_block(layer_in)
-    rpn_del, rpn_cls = rpn_block(feature_map)
-    roi_cls, roi_del, roi_box = roi_block(rpn_cls, rpn_del)
-    sup_box = sup_block(roi_cls, roi_box)
-    mdl = Model(inputs=layer_in, outputs=[sup_box, roi_cls, roi_del, roi_box])
+    feature_map = vgg(layer_in)
+    rpn_dlt, rpn_log = rpn(feature_map)
+    roi_cls, roi_dlt, roi_box = roi(rpn_log, rpn_dlt)
+    sup_box = suppress(roi_cls, roi_box, cfg.N_SUPP_SCORE, cfg.N_SUPP_NMS,
+                       cfg.NMS_TH)
+    mdl = Model(inputs=layer_in, outputs=[sup_box, roi_cls, roi_dlt, roi_box])
     return mdl

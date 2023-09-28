@@ -251,19 +251,17 @@ def from_xywh(xywh: tf.Tensor) -> tf.Tensor:
 
     Args:
         xywh (tf.Tensor): bounding box tensor (XYWH) of shape
-            (N1, N2, ..., Nk, C) where C >= 4
+            (N1, N2, ..., Nk, 4)
 
     Returns:
-        tf.Tensor: bounding box tensor (YXYX) of shape (N1, N2, ..., Nk, C)
+        tf.Tensor: bounding box tensor (YXYX) of shape (N1, N2, ..., Nk, 4)
     """
-    x_, y_, w_, h_, rem_ = (xywh[..., 0], xywh[..., 1], xywh[..., 2],
-                            xywh[..., 3], xywh[..., 4:])
+    x_, y_, w_, h_ = (xywh[..., 0], xywh[..., 1], xywh[..., 2], xywh[..., 3])
     xmin_ = x_ - 0.5 * w_
     ymin_ = y_ - 0.5 * h_
     xmax_ = x_ + 0.5 * w_
     ymax_ = y_ + 0.5 * h_
-    yxyx = tf.stack([ymin_, xmin_, ymax_, xmax_], axis=-1)
-    return tf.concat([yxyx, rem_], axis=-1)
+    return tf.stack([ymin_, xmin_, ymax_, xmax_], axis=-1)
 
 
 def to_xywh(bbox: tf.Tensor) -> tf.Tensor:
