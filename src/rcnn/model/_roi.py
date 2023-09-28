@@ -6,7 +6,8 @@ from rcnn import anchor
 # Buffer to clip the RoIs. Defaults to 1e-1.
 BUFFER = 1e-1
 # valid anchors
-AC_VAL = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_val_ac, 4)
+AC_VAL = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_VAL_AC, 4)
+N_VAL_AC = anchor.N_RPNAC  # number of valid anchors, also the dim of axis=1
 
 
 def roi(
@@ -24,17 +25,17 @@ def roi(
     Returns:
         tuple[tf.Tensor, tf.Tensor, tf.Tensor]: RPN classification, bounding
             box delta, and RoIs. All are filtered by valid anchor masks.
-            shape: (B, N_val_ac, 1), (B, N_val_ac, 4), and (B, N_val_ac, 4).
-            where N_val_ac <= H_FM * W_FM * 9 is the number of valid anchors.
+            Shape [B, N_VAL_AC, 1], [B, N_VAL_AC, 4], and [B, N_VAL_AC, 4].
     """
     # Get valid labels and deltas based on valid anchor masks.
-    # shape: (B, N_val_ac, 1) and (B, N_val_ac, 4)
-    log_val = tf.keras.layers.Lambda(
-        lambda x: tf.boolean_mask(x, anchor.MASK_RPNAC == 1, axis=1))(rpn_log)
-    dlt_val = tf.keras.layers.Lambda(
-        lambda x: tf.boolean_mask(x, anchor.MASK_RPNAC == 1, axis=1))(rpn_dlt)
+    # shape: (B, N_VAL_AC, 1) and (B, N_VAL_AC, 4)
+    log_val = tf.boolean_mask(rpn_log, anchor.MASK_RPNAC == 1, axis=1)
+    dlt_val = tf.boolean_mask(rpn_dlt, anchor.MASK_RPNAC == 1, axis=1)
+    # make sure shape inference works
+    log_val = tf.reshape(log_val, (-1, N_VAL_AC, 1))
+    dlt_val = tf.reshape(dlt_val, (-1, N_VAL_AC, 4))
     # Computing YXYX RoIs from deltas.
-    rois = anchor.delta2bbox(AC_VAL, dlt_val)  # (B, N_val_ac, 4)
-    rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, n_val_ac, 4)
+    rois = anchor.delta2bbox(AC_VAL, dlt_val)  # (B, N_VAL_AC, 4)
+    rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, N_VAL_AC, 4)
 
     return log_val, dlt_val, rois
