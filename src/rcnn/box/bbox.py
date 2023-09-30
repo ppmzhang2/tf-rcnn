@@ -9,8 +9,7 @@ from typing import Union
 import numpy as np
 import tensorflow as tf
 
-from rcnn import cfg
-
+EPS = 1e-4
 TensorT = Union[tf.Tensor, np.ndarray]  # noqa: UP007
 
 
@@ -227,7 +226,7 @@ def iou(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     area_label = area(bbox_lbl)
     area_inter = interarea(bbox_prd, bbox_lbl)
     area_union = area_pred + area_label - area_inter
-    return (area_inter + cfg.EPS) / (area_union + cfg.EPS)
+    return (area_inter + EPS) / (area_union + EPS)
 
 
 def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
@@ -241,8 +240,33 @@ def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
         tf.Tensor: IoU tensor of shape (N1, N2)
     """
     n1, n2 = tf.shape(bbox_prd)[0], tf.shape(bbox_lbl)[0]
+    # convert to shape (N1, N2, C)
     bbox_prd_ = tf.tile(tf.expand_dims(bbox_prd, axis=1), [1, n2, 1])
     bbox_lbl_ = tf.tile(tf.expand_dims(bbox_lbl, axis=0), [n1, 1, 1])
+    return iou(bbox_prd_, bbox_lbl_)
+
+
+# @tf.function(
+#     input_signature=[
+#         tf.TensorSpec(shape=(None, None, 4), dtype=tf.float32),
+#         tf.TensorSpec(shape=(None, None, 4), dtype=tf.float32),
+#     ],
+#     autograph=True,
+# )
+def iou_batch(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
+    """Calculate IoU matrix for each batch of two sets of bounding boxes.
+
+    Args:
+        bbox_prd (tf.Tensor): predicted bounding boxes of shape (B, N1, C)
+        bbox_lbl (tf.Tensor): ground truth bounding boxes of shape (B, N2, C)
+
+    Returns:
+        tf.Tensor: IoU tensor of shape (B, N1, N2)
+    """
+    n1, n2 = tf.shape(bbox_prd)[1], tf.shape(bbox_lbl)[1]
+    # convert to shape (B, N1, N2, C)
+    bbox_prd_ = tf.tile(tf.expand_dims(bbox_prd, axis=2), [1, 1, n2, 1])
+    bbox_lbl_ = tf.tile(tf.expand_dims(bbox_lbl, axis=1), [1, n1, 1, 1])
     return iou(bbox_prd_, bbox_lbl_)
 
 
