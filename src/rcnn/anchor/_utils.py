@@ -1,9 +1,9 @@
-"""Utils of module box."""
+"""Transformations between bounding boxes and deltas."""
 import tensorflow as tf
 
 from rcnn import cfg
-from rcnn.box import bbox
-from rcnn.box import delta
+from rcnn.anchor import _box
+from rcnn.anchor import _delta
 
 
 def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
@@ -19,12 +19,12 @@ def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
     Returns:
         tf.Tensor: bbox tensor of shape (N1, N2, ..., Nk, 4)
     """
-    xctr_ = bbox.xctr(base) + bbox.w(base) * delta.dx(diff)
-    yctr_ = bbox.yctr(base) + bbox.h(base) * delta.dy(diff)
-    w_ = bbox.w(base) * tf.exp(delta.dw(diff))
-    h_ = bbox.h(base) * tf.exp(delta.dh(diff))
+    xctr_ = _box.xctr(base) + _box.w(base) * _delta.dx(diff)
+    yctr_ = _box.yctr(base) + _box.h(base) * _delta.dy(diff)
+    w_ = _box.w(base) * tf.exp(_delta.dw(diff))
+    h_ = _box.h(base) * tf.exp(_delta.dh(diff))
     xywh_ = tf.stack([xctr_, yctr_, w_, h_], axis=-1)
-    return bbox.from_xywh(xywh_)
+    return _box.from_xywh(xywh_)
 
 
 def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
@@ -43,14 +43,14 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
     Returns:
         tf.Tensor: delta tensor of shape (N1, N2, ..., Nk, 4)
     """
-    xctr_r = bbox.xctr(bbox_r)
-    yctr_r = bbox.yctr(bbox_r)
-    w_r = tf.math.maximum(bbox.w(bbox_r), cfg.EPS)
-    h_r = tf.math.maximum(bbox.h(bbox_r), cfg.EPS)
-    xctr_l = bbox.xctr(bbox_l)
-    yctr_l = bbox.yctr(bbox_l)
-    w_l = bbox.w(bbox_l)
-    h_l = bbox.h(bbox_l)
+    xctr_r = _box.xctr(bbox_r)
+    yctr_r = _box.yctr(bbox_r)
+    w_r = tf.math.maximum(_box.w(bbox_r), cfg.EPS)
+    h_r = tf.math.maximum(_box.h(bbox_r), cfg.EPS)
+    xctr_l = _box.xctr(bbox_l)
+    yctr_l = _box.yctr(bbox_l)
+    w_l = _box.w(bbox_l)
+    h_l = _box.h(bbox_l)
     bx_del = tf.stack(
         [
             (xctr_l - xctr_r) / w_r,

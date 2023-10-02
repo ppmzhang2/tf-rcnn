@@ -2,7 +2,7 @@
 import tensorflow as tf
 from tensorflow.keras.models import Model
 
-from rcnn import box
+from rcnn import anchor
 from rcnn import cfg
 from rcnn.model import get_rpn_model
 
@@ -19,9 +19,9 @@ def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     b = 16  # batch size
     inputs = tf.random.uniform((b, cfg.H, cfg.W, cfg.C))
     rois = tf.random.uniform((b, cfg.N_SUPP_NMS, 4))  # (B, N_rois, 4)
-    logits = tf.random.uniform((b, box.n_val_anchors, 1))
-    deltas = tf.random.uniform((b, box.n_val_anchors, 4))
-    boxes = tf.random.uniform((b, box.n_val_anchors, 4))
+    logits = tf.random.uniform((b, anchor.N_RPNAC, 1))
+    deltas = tf.random.uniform((b, anchor.N_RPNAC, 4))
+    boxes = tf.random.uniform((b, anchor.N_RPNAC, 4))
     return inputs, rois, logits, deltas, boxes
 
 
