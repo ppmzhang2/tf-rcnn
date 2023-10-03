@@ -1,7 +1,7 @@
 """Generate RPN targets for training."""
 import tensorflow as tf
 
-from rcnn import box
+from rcnn.anchor import _box
 
 IOU_SCALE = 10000  # scale for IoU for converting to int
 NEG_TH_ACGT = int(IOU_SCALE * 0.30)  # lower bound for anchor-GT highest IoU
@@ -92,10 +92,9 @@ def filter_on_max(x: tf.Tensor) -> tf.Tensor:
 
     # Find the maximum values in the second column for each unique element in
     # the first column
-    max_indices = tf.math.unsorted_segment_max(
-        data=x[:, 1],
-        segment_ids=k_idx,
-        num_segments=tf.size(k_unique))
+    max_indices = tf.math.unsorted_segment_max(data=x[:, 1],
+                                               segment_ids=k_idx,
+                                               num_segments=tf.size(k_unique))
 
     # Create a boolean mask where each max value is True, others are False
     return tf.reduce_any(x[:, 1][:, tf.newaxis] == max_indices, axis=-1)
@@ -254,7 +253,7 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
           - [0.0, 0.0, 0.0, 0.0]: ignore
           - otherwise: foreground
     """
-    ious = tf.cast(IOU_SCALE * box.bbox.iou_batch(bx_ac, bx_gt), tf.int32)
+    ious = tf.cast(IOU_SCALE * _box.iou_batch(bx_ac, bx_gt), tf.int32)
     idx_gtac = tf.argmax(ious, axis=1, output_type=tf.int32)
     iou_gtac = tf.reduce_max(ious, axis=1)
     idx_acgt = tf.argmax(ious, axis=2, output_type=tf.int32)

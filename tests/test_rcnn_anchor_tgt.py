@@ -1,10 +1,11 @@
-"""Test data.rpn module."""
+"""Test `anchor._tgt` module."""
 from dataclasses import dataclass
 
 import pytest
 import tensorflow as tf
 
-from rcnn.data import rpn
+from rcnn.anchor import get_gt_box
+from rcnn.anchor._tgt import _sample_mask
 
 EPS = 1e-4
 
@@ -33,16 +34,16 @@ def rand_mask(n_total: int, n_one: int) -> tf.Tensor:
     Data(mask=rand_mask(100, 5), num=5),
     Data(mask=rand_mask(1000, 20), num=20),
 ])
-def test_data_rpn_sample_mask(data: Data) -> None:
-    """Test risk.align_mask."""
-    mask_orig = rpn._sample_mask(data.mask, data.num)
+def test_anchor_sample_mask(data: Data) -> None:
+    """Test `anchor._get_gt_box`."""
+    mask_orig = _sample_mask(data.mask, data.num)
     assert tf.reduce_all(tf.equal(mask_orig, data.mask))
-    mask_samp = rpn._sample_mask(data.mask, data.num - 1)
+    mask_samp = _sample_mask(data.mask, data.num - 1)
     assert tf.reduce_sum(mask_samp) == data.num - 1
 
 
-def test_data_rpn_get_gt_box() -> None:
-    """Test rpn._get_gt_box.
+def test_anchor_get_gt_box() -> None:
+    """Test `anchor.get_gt_box`.
 
     TODO: Add more test cases.
     """
@@ -113,5 +114,5 @@ def test_data_rpn_get_gt_box() -> None:
         dtype=tf.float32,
     )
 
-    bx_tgt = rpn.get_gt_box(bx_ac, bx_gt)
+    bx_tgt = get_gt_box(bx_ac, bx_gt)
     assert tf.reduce_sum(tf.abs(bx_tgt - bx_exp)) < EPS

@@ -1,12 +1,12 @@
 """Region of Interest (RoI) Block."""
 import tensorflow as tf
 
-from rcnn import box
+from rcnn import anchor
 
 # Buffer to clip the RoIs. Defaults to 1e-1.
 BUFFER = 1e-1
 # valid anchors
-AC_VAL = tf.constant(box.val_anchors, dtype=tf.float32)  # (N_val_ac, 4)
+AC_VAL = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_val_ac, 4)
 
 
 def roi(
@@ -29,12 +29,12 @@ def roi(
     """
     # Get valid labels and deltas based on valid anchor masks.
     # shape: (B, N_val_ac, 1) and (B, N_val_ac, 4)
-    log_val = tf.keras.layers.Lambda(lambda x: tf.boolean_mask(
-        x, box.val_anchor_mask == 1, axis=1))(rpn_log)
-    dlt_val = tf.keras.layers.Lambda(lambda x: tf.boolean_mask(
-        x, box.val_anchor_mask == 1, axis=1))(rpn_dlt)
+    log_val = tf.keras.layers.Lambda(
+        lambda x: tf.boolean_mask(x, anchor.MASK_RPNAC == 1, axis=1))(rpn_log)
+    dlt_val = tf.keras.layers.Lambda(
+        lambda x: tf.boolean_mask(x, anchor.MASK_RPNAC == 1, axis=1))(rpn_dlt)
     # Computing YXYX RoIs from deltas.
-    rois = box.delta2bbox(AC_VAL, dlt_val)  # (B, N_val_ac, 4)
+    rois = anchor.delta2bbox(AC_VAL, dlt_val)  # (B, N_val_ac, 4)
     rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, n_val_ac, 4)
 
     return log_val, dlt_val, rois

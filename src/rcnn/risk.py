@@ -2,7 +2,7 @@
 import tensorflow as tf
 
 from rcnn import cfg
-from rcnn.box import bbox
+from rcnn.anchor import _box
 
 
 def risk_rpn_reg(
@@ -111,39 +111,25 @@ def risk_rpn(
     return tf.reduce_mean(loss_reg + loss_obj + loss_bkg)
 
 
-def mean_ap_rpn_(
-    bx_roi: tf.Tensor,
-    bx_gt: tf.Tensor,
-    iou_threshold: float = 0.5,
+@tf.function
+def mean_ap_rpn(
+    bx_prd: tf.Tensor,
+    bx_tgt: tf.Tensor,
+    iou_th: float = 0.5,
 ) -> float:
-    """Compute the mAP for the RPN model for a single image.
+    """Compute the mAP for the RPN model for a batch of images.
 
     Args:
-        bx_roi (tf.Tensor): RoI boxes (N_ac, 4)
-        bx_gt (tf.Tensor): ground truth boxes (N_gt, 4)
-        iou_threshold (float, optional): IoU threshold. Defaults to 0.5.
+        bx_prd (tf.Tensor): predicted boxes (B, N_prd, 4)
+        bx_tgt (tf.Tensor): target boxes (B, N_tgt, 4)
+        iou_th (float, optional): IoU threshold. Defaults to 0.5.
 
     Returns:
         float: The mAP value.
     """
-    tp = fp = 0
-    ious = bbox.iou_mat(bx_roi, bx_gt)
-    iou_roi_max = tf.reduce_max(ious, axis=1)
-    mask = tf.where(iou_roi_max > iou_threshold, 1.0, 0.0)
-    tp = tf.reduce_sum(mask)
-    fp = tf.reduce_sum(1 - mask)
-    return tp / (tp + fp)
-
-
-@tf.function
-def mean_ap_rpn(
-    bx_roi: tf.Tensor,
-    bx_gt: tf.Tensor,
-    iou_threshold: float = 0.5,
-) -> float:
-    """Compute the mAP for the RPN model for a batch of images."""
-    return tf.map_fn(
-        lambda x: mean_ap_rpn_(x[0], x[1], iou_threshold),
-        (bx_roi, bx_gt),
-        fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
-    )
+    ious = _box.iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
+    iou_roi_max = tf.reduce_max(ious, axis=-1)  # (B, N_prd)
+    mask = tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)
+    tp = tf.reduce_sum(mask, axis=-1)  # (B,)
+    fp = tf.reduce_sum(1 - mask, axis=-1)  # (B,)
+    return tf.reduce_mean(tp / (tp + fp))

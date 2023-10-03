@@ -5,7 +5,7 @@ import os
 import cv2
 import tensorflow as tf
 
-from rcnn import box
+from rcnn import anchor
 from rcnn import cfg
 from rcnn import data
 from rcnn import vis
@@ -16,7 +16,7 @@ from rcnn.risk import risk_rpn
 RPN_CKPTS_DIR = os.path.join(cfg.MODELDIR, "rpn_ckpts")
 LOGGER = logging.getLogger(__name__)
 
-ac = tf.constant(box.val_anchors, dtype=tf.float32)  # (N_ac, 4)
+ac = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_ac, 4)
 
 # general optimizer
 optimizer = tf.keras.optimizers.Adam(
@@ -57,23 +57,22 @@ def load_rpn_model() -> tuple[tf.keras.Model, tf.train.CheckpointManager]:
 def train_rpn_step(
     model: tf.keras.Model,
     images: tf.Tensor,
+    bx_ac: tf.Tensor,
     bx_gt: tf.Tensor,
-    batch: int,
 ) -> float:
     """Train RPN for one step.
 
     Args:
         model (tf.keras.Model): RPN model.
         images (tf.Tensor): images (B, H, W, 3)
+        bx_ac (tf.Tensor): anchor boxes (B, N_ac, 4)
         bx_gt (tf.Tensor): ground truth boxes (B, N_gt, 4)
-        batch (int): batch size.
     """
-    bx_ac = tf.repeat(ac[tf.newaxis, ...], batch, axis=0)  # (B, N_ac, 4)
     with tf.GradientTape() as tape:
         _, logits, _, roi_box = model(images, training=True)
-        bx_tgt = data.rpn.get_gt_box(bx_ac, bx_gt)
-        mask_obj = data.rpn.get_gt_mask(bx_tgt, bkg=False)
-        mask_bkg = data.rpn.get_gt_mask(bx_tgt, bkg=True)
+        bx_tgt = anchor.get_gt_box(bx_ac, bx_gt)
+        mask_obj = anchor.get_gt_mask(bx_tgt, bkg=False)
+        mask_bkg = anchor.get_gt_mask(bx_tgt, bkg=True)
         loss = risk_rpn(roi_box, bx_tgt, logits, mask_obj, mask_bkg)
     grads = tape.gradient(loss, model.trainable_variables)
     # check NaN
@@ -113,7 +112,9 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
         LOGGER.info(f"EPOCH {ep + 1:02d}")
         loss_tr.reset_states()  # reset metrics after each epoch
         for i, (img, bx_gt, _) in enumerate(ds_tr):
-            loss_tr(train_rpn_step(model, img, bx_gt, batch))
+            # Get anchor boxes
+            bx_ac = tf.repeat(ac[tf.newaxis, ...], img.shape[0], axis=0)
+            loss_tr(train_rpn_step(model, img, bx_ac, bx_gt))
             LOGGER.info(f"-- Ep/Batch {ep + 1:02d}/{i + 1:03d} "
                         f"Training Loss {loss_tr.result():.4f}")
 
@@ -128,7 +129,7 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
         mean_ap.reset_states()  # reset metrics after each epoch
         for i, (img, bx_gt, _) in enumerate(ds_va):
             bx_sup, _, _, _ = model(img, training=False)
-            mean_ap(mean_ap_rpn(bx_sup, bx_gt, iou_threshold=0.5))
+            mean_ap(mean_ap_rpn(bx_sup, bx_gt, iou_th=0.5))
             LOGGER.info(f"-- Ep/Batch {ep + 1:02d}/{i + 1:03d} (VA) "
                         f"mAP {mean_ap.result():.4f}")
         LOGGER.info(f"EPOCH {ep + 1:02d} "
