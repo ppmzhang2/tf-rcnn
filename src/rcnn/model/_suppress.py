@@ -2,28 +2,44 @@
 import tensorflow as tf
 
 
-def nms_(inputs: tuple[tf.Tensor, tf.Tensor, int, float]) -> tf.Tensor:
-    """Non-Maximum Suppression (NMS).
-    
-    Wrap the `tf.image.non_max_suppression` function as dynamic shape
-    compatibility is not supported.
+def nms(inputs: tuple[tf.Tensor, tf.Tensor, int, float]) -> tf.Tensor:
+    """Non-Maximum Suppression (NMS) index for a batch of images.
+
+    Args:
+        inputs (tuple[tf.Tensor, tf.Tensor, int, float]):
+            - boxes (tf.Tensor): boxes to perform NMS on. Shape [B, N, 4].
+            - scores (tf.Tensor): scores to perform NMS on. Shape [B, N].
+            - n_nms (int): number of boxes to keep after NMS.
+            - nms_th (float): NMS threshold.
+
+    Returns:
+        tf.Tensor: indices of the boxes to keep after NMS. Shape [B, M] where
+            M <= n_nms.
     """
     boxes, scores, n_nms, nms_th = inputs
 
-    def single_image_nms(args: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
-        """NMS for a single image."""
+    def _nms(args: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
+        """NMS index for a single image.
+
+        Args:
+            args (tuple[tf.Tensor, tf.Tensor]): boxes and scores for a single
+                image. Shape [N, 4] and [N, ].
+
+        Returns:
+            tf.Tensor: indices of the boxes to keep.
+                Shape [M, ] where M <= n_nms.
+        """
         boxes = args[0]
         scores = args[1]
-        idx = tf.image.non_max_suppression(
+        return tf.image.non_max_suppression(
             boxes,
             scores,
             n_nms,
             nms_th,
         )
-        return idx
 
     return tf.map_fn(
-        fn=single_image_nms,
+        fn=_nms,
         elems=(boxes, scores),
         fn_output_signature=tf.TensorSpec(shape=(None, ), dtype=tf.int32),
     )
@@ -58,9 +74,10 @@ def suppress(
     top_score_idx = tf.math.top_k(scores, k=n_score).indices
     top_score = tf.gather(scores, top_score_idx, batch_dims=1)  # B, n_score
     top_roi = tf.gather(rpn_roi, top_score_idx, batch_dims=1)  # B, n_score, 4
-    # nms
-    # 1. sort by score
-    nms_idx = tf.keras.layers.Lambda(nms_)((top_roi, top_score, n_nms, nms_th))
+    # nms: wrap the `tf.image.non_max_suppression` function as dynamic shape
+    # compatibility is not supported.
+    # TODO: handle varying numbers of RoIs per image with padding
+    nms_idx = tf.keras.layers.Lambda(nms)((top_roi, top_score, n_nms, nms_th))
     # 2. gather top nms
     nms_roi = tf.gather(top_roi, nms_idx, batch_dims=1)  # (B, n_nms, 4)
     return nms_roi
