@@ -1,8 +1,8 @@
 """Risk functions."""
 import tensorflow as tf
 
+from rcnn import anchor
 from rcnn import cfg
-from rcnn.anchor import _box
 
 
 def risk_rpn_reg(
@@ -28,8 +28,6 @@ def risk_rpn_reg(
     prd = tf.boolean_mask(bx_prd, mask)  # (N_obj, 4)
     tgt = tf.boolean_mask(bx_tgt, mask)  # (N_obj, 4)
     loss = fn_huber(tgt, prd)  # (N_obj,)
-    # print(prd[:5])  # normal
-    # print(tgt[:5])  # dw, dh = -inf
     return tf.reduce_sum(loss) / (tf.reduce_sum(mask) + cfg.EPS)
 
 
@@ -73,7 +71,6 @@ def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
     return tf.reduce_sum(loss) / (tf.reduce_sum(mask_bkg) + cfg.EPS)
 
 
-@tf.function
 def risk_rpn(
     bx_roi: tf.Tensor,
     bx_tgt: tf.Tensor,
@@ -111,7 +108,6 @@ def risk_rpn(
     return tf.reduce_mean(loss_reg + loss_obj + loss_bkg)
 
 
-@tf.function
 def mean_ap_rpn(
     bx_prd: tf.Tensor,
     bx_tgt: tf.Tensor,
@@ -127,7 +123,7 @@ def mean_ap_rpn(
     Returns:
         float: The mAP value.
     """
-    ious = _box.iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
+    ious = anchor.iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
     iou_roi_max = tf.reduce_max(ious, axis=-1)  # (B, N_prd)
     mask = tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)
     tp = tf.reduce_sum(mask, axis=-1)  # (B,)

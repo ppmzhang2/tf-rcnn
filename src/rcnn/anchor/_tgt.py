@@ -17,45 +17,6 @@ __all__ = [
 ]
 
 
-def n_pos_mask(mask: tf.Tensor) -> int:
-    """Get number of positive anchors.
-
-    Args:
-        mask (tf.Tensor): 0/1 mask of anchors (N_ac,)
-
-    Returns:
-        int: number of positive anchors
-    """
-    return tf.get_static_value(tf.reduce_sum(tf.cast(mask, tf.int32)))
-
-
-def _sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
-    """Sample `num` anchors from `mask`.
-
-    Args:
-        mask (tf.Tensor): 0/1 mask of anchors (N_ac,)
-        num (int): number of positive anchors to sample
-
-    Returns:
-        tf.Tensor: 0/1 mask of anchors (N_ac,)
-    """
-    # return if number of positive anchors is less than `num`
-    pos_num = n_pos_mask(mask)
-    if pos_num <= num:
-        return mask
-    # 1. get indices of positive
-    idx_pos = tf.where(mask > 0)  # (n_pos, 1), tf.int64
-    # 2. randomly select `num` positive indices
-    idx_pos = tf.random.shuffle(idx_pos)[:num]  # (n_obj, 1), tf.int64
-    # 3. update mask with selected indices
-    mask_ = tf.tensor_scatter_nd_update(
-        tf.zeros_like(mask, dtype=mask.dtype),  # (N_ac,)
-        idx_pos,  # (n_obj, 1)
-        tf.ones((num, ), dtype=mask.dtype),  # (n_obj,)
-    )  # (N_ac,)
-    return mask_
-
-
 def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
     """Sample `num` anchors from `mask` for a batch of images.
 
@@ -66,11 +27,14 @@ def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
     Returns:
         tf.Tensor: 0/1 mask of anchors (B, N_ac)
     """
-    return tf.map_fn(
-        lambda x: _sample_mask(x, num),  # (N_ac,) -> (N_ac,)
-        mask,  # (B, N_ac)
-        fn_output_signature=tf.TensorSpec(shape=(None, ), dtype=mask.dtype),
-    )  # (B, N_ac)
+    th = num / (tf.reduce_sum(mask, axis=-1, keepdims=True) + 1e-6)
+    rand = tf.random.uniform(
+        tf.shape(mask),
+        minval=0,
+        maxval=1,
+        dtype=tf.float32,
+    )
+    return tf.cast(rand < th, tf.float32) * mask
 
 
 def filter_on_max(x: tf.Tensor) -> tf.Tensor:

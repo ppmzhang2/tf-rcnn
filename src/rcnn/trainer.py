@@ -19,7 +19,10 @@ LOGGER = logging.getLogger(__name__)
 ac = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_ac, 4)
 
 # general optimizer
-optimizer = tf.keras.optimizers.Adam(
+# TODO:
+# - use different learning rate
+# - learning rate scheduler
+optim = tf.keras.optimizers.Adam(
     learning_rate=0.0001,
     beta_1=0.9,
     beta_2=0.999,
@@ -38,7 +41,7 @@ def load_rpn_model() -> tuple[tf.keras.Model, tf.train.CheckpointManager]:
             checkpoint manager.
     """
     rpn_model = get_rpn_model()
-    checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=rpn_model)
+    checkpoint = tf.train.Checkpoint(optimizer=optim, model=rpn_model)
     manager = tf.train.CheckpointManager(
         checkpoint,
         directory=RPN_CKPTS_DIR,
@@ -54,39 +57,48 @@ def load_rpn_model() -> tuple[tf.keras.Model, tf.train.CheckpointManager]:
     return rpn_model, manager
 
 
+@tf.function
 def train_rpn_step(
-    model: tf.keras.Model,
+    mdl: tf.keras.Model,
     images: tf.Tensor,
     bx_ac: tf.Tensor,
     bx_gt: tf.Tensor,
-) -> float:
+) -> tf.Tensor:
     """Train RPN for one step.
 
+    - The `tf.function` decorator is necessary to avoid the `tf.function`
+      retracing issue:
+      no `tf.function` introduces the re-tracing issue, just as abusing does.
+    - To make sure `tf.function` works, functions inside it should be succinct,
+      and ideally contain only `tf` or `tf.math` operations, and no `np` or
+      `python` operations.
+
     Args:
-        model (tf.keras.Model): RPN model.
+        mdl (tf.keras.Model): RPN model.
         images (tf.Tensor): images (B, H, W, 3)
         bx_ac (tf.Tensor): anchor boxes (B, N_ac, 4)
         bx_gt (tf.Tensor): ground truth boxes (B, N_gt, 4)
+
+    Returns:
+        tf.Tensor: loss value.
     """
     with tf.GradientTape() as tape:
-        _, logits, _, roi_box = model(images, training=True)
+        _, logits, _, roi_box = mdl(images, training=True)
         bx_tgt = anchor.get_gt_box(bx_ac, bx_gt)
         mask_obj = anchor.get_gt_mask(bx_tgt, bkg=False)
         mask_bkg = anchor.get_gt_mask(bx_tgt, bkg=True)
         loss = risk_rpn(roi_box, bx_tgt, logits, mask_obj, mask_bkg)
-    grads = tape.gradient(loss, model.trainable_variables)
-    # check NaN
-    for grad in grads:
-        if tf.math.reduce_any(tf.math.is_nan(grad)):
-            msg = "NaN gradient detected."
-            raise ValueError(msg)
+    grads = tape.gradient(loss, mdl.trainable_variables)
+    # check NaN using assertions; it works both in
+    # - Graph Construction Phase / Defining operations (blueprint)
+    # - Session Execution Phase / Running operations (actual computation)
+    grads = [
+        tf.debugging.assert_all_finite(g, message="NaN/Inf gradient detected.")
+        for g in grads
+    ]
     # clip gradient
     grads, _ = tf.clip_by_global_norm(grads, 5.0)
-    optimizer.apply_gradients(
-        zip(  # noqa: B905
-            grads,
-            model.trainable_variables,
-        ))
+    optim.apply_gradients(zip(grads, mdl.trainable_variables))  # noqa: B905
     return loss
 
 
@@ -97,6 +109,9 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
         epochs (int): number of epochs.
         save_intv (int): interval to save the model.
         batch (int): batch size.
+
+    Raises:
+        ValueError: if NaN gradient is detected.
     """
     batch_va = 16
     # initialize metrics

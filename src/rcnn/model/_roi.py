@@ -31,9 +31,6 @@ def roi(
     # shape: (B, N_VAL_AC, 1) and (B, N_VAL_AC, 4)
     log_val = tf.boolean_mask(rpn_log, anchor.MASK_RPNAC == 1, axis=1)
     dlt_val = tf.boolean_mask(rpn_dlt, anchor.MASK_RPNAC == 1, axis=1)
-    # make sure shape inference works
-    log_val = tf.reshape(log_val, (-1, N_VAL_AC, 1))
-    dlt_val = tf.reshape(dlt_val, (-1, N_VAL_AC, 4))
     # Computing YXYX RoIs from deltas.
     rois = anchor.delta2bbox(AC_VAL, dlt_val)  # (B, N_VAL_AC, 4)
     rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, N_VAL_AC, 4)
