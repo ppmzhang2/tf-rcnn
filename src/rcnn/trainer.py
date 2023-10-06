@@ -83,11 +83,12 @@ def train_rpn_step(
         tf.Tensor: loss value.
     """
     with tf.GradientTape() as tape:
-        _, logits, _, roi_box = mdl(images, training=True)
+        dlt, log, _ = mdl(images, training=True)
         bx_tgt = anchor.get_gt_box(bx_ac, bx_gt)
+        dlt_tgt = anchor.bbox2delta(bx_tgt, bx_ac)
         mask_obj = anchor.get_gt_mask(bx_tgt, bkg=False)
         mask_bkg = anchor.get_gt_mask(bx_tgt, bkg=True)
-        loss = risk_rpn(roi_box, bx_tgt, logits, mask_obj, mask_bkg)
+        loss = risk_rpn(dlt, dlt_tgt, log, mask_obj, mask_bkg)
     grads = tape.gradient(loss, mdl.trainable_variables)
     # check NaN using assertions; it works both in
     # - Graph Construction Phase / Defining operations (blueprint)
@@ -118,7 +119,7 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
     loss_tr = tf.keras.metrics.Mean(name="train_loss")
     mean_ap = tf.keras.metrics.Mean(name="mean_ap")
     # Load model and checkpoint manager
-    model, manager = load_rpn_model()
+    mdl, manager = load_rpn_model()
     # Load dataset
     ds_tr, ds_va, _ = data.load_train_valid(cfg.DS, batch, batch_va)
 
@@ -129,7 +130,7 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
         for i, (img, bx_gt, _) in enumerate(ds_tr):
             # Get anchor boxes
             bx_ac = tf.repeat(ac[tf.newaxis, ...], img.shape[0], axis=0)
-            loss_tr(train_rpn_step(model, img, bx_ac, bx_gt))
+            loss_tr(train_rpn_step(mdl, img, bx_ac, bx_gt))
             LOGGER.info(f"-- Ep/Batch {ep + 1:02d}/{i + 1:03d} "
                         f"Training Loss {loss_tr.result():.4f}")
 
@@ -143,7 +144,7 @@ def train_rpn(epochs: int, save_intv: int, batch: int) -> None:
         LOGGER.info(f"EPOCH {ep + 1:02d} (Validation)")
         mean_ap.reset_states()  # reset metrics after each epoch
         for i, (img, bx_gt, _) in enumerate(ds_va):
-            bx_sup, _, _, _ = model(img, training=False)
+            _, _, bx_sup = mdl(img, training=False)
             mean_ap(mean_ap_rpn(bx_sup, bx_gt, iou_th=0.5))
             LOGGER.info(f"-- Ep/Batch {ep + 1:02d}/{i + 1:03d} (VA) "
                         f"mAP {mean_ap.result():.4f}")
