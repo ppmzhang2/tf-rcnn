@@ -13,7 +13,6 @@ def delta2bbox(base: tf.Tensor, diff: tf.Tensor) -> tf.Tensor:
 
     Args:
         base (tf.Tensor): base bbox tensor of shape (N1, N2, ..., Nk, 4)
-
         diff (tf.Tensor): delta tensor of shape (N1, N2, ..., Nk, 4)
 
     Returns:
