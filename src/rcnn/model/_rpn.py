@@ -1,9 +1,12 @@
 """Region Proposal Network (RPN)."""
 import tensorflow as tf
 
+from rcnn import anchor
 from rcnn import cfg
 
 SEED_INIT = 42
+MASK_AC = tf.constant(anchor.MASK_RPNAC, dtype=tf.float32)  # (N_ANCHOR,)
+N_VAL_AC = anchor.N_RPNAC  # number of valid anchors, also the dim of axis=1
 
 reg_l2 = tf.keras.regularizers.l2(0.0005)
 # Derive three unique seeds from the initial seed
@@ -22,8 +25,8 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
 
     Returns:
         tuple[tf.Tensor, tf.Tensor]: predicted deltas and labels.
-            - deltas: (n_batch, N_ANCHOR * H_FM * W_FM, 4)
-            - labels: (n_batch, N_ANCHOR * H_FM * W_FM, 1)
+            - deltas: (n_batch, N_VAL_AC, 4)
+            - labels: (n_batch, N_VAL_AC, 1)
     """
     # processed feature map (n_batch, h_fm, w_fm, 512)
     fm = tf.keras.layers.Conv2D(
@@ -32,7 +35,7 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_fm),
         padding="same",
         activation="relu",
-        name="rpn_conv",
+        name="rpn_share",
     )(fm)
 
     # predicted deltas
@@ -45,18 +48,26 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         name="rpn_dlt",
     )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
 
-    # predicted labels
-    lbl = tf.keras.layers.Conv2D(
+    # predicted logits
+    log = tf.keras.layers.Conv2D(
         cfg.N_ANCHOR,
         (1, 1),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_lbl),
         kernel_regularizer=reg_l2,
         activation=None,
-        name="rpn_cls",
+        name="rpn_log",
     )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR)
 
     # flatten the tensors
-    # cannot simply use tf.reshape because the shape is dynamic
+    # shape: (B, H_FM * W_FM * N_ANCHOR, 4) and (B, H_FM * W_FM * N_ANCHOR, 1)
     dlt_flat = tf.reshape(dlt, (-1, h_fm * w_fm * cfg.N_ANCHOR, 4))
-    lbl_flat = tf.reshape(lbl, (-1, h_fm * w_fm * cfg.N_ANCHOR, 1))
-    return dlt_flat, lbl_flat
+    log_flat = tf.reshape(log, (-1, h_fm * w_fm * cfg.N_ANCHOR, 1))
+
+    # Get valid labels and deltas based on valid anchor masks.
+    # shape: (B, N_VAL_AC, 4) and (B, N_VAL_AC, 1)
+    dlt_val = tf.boolean_mask(dlt_flat, MASK_AC == 1, axis=1)
+    log_val = tf.boolean_mask(log_flat, MASK_AC == 1, axis=1)
+
+    # for shape inference
+    return (tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
+            tf.reshape(log_val, (-1, N_VAL_AC, 1)))

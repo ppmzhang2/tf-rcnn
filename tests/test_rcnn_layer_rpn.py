@@ -1,7 +1,7 @@
 """Test the RPN model."""
 import tensorflow as tf
 
-from rcnn import cfg
+from rcnn import anchor
 from rcnn.model._rpn import rpn
 
 BS = 2  # batch size
@@ -20,8 +20,8 @@ def setup_model() -> tf.keras.Model:
 def test_rpt_training() -> None:
     """Test the RPN model training."""
     inputs = tf.random.uniform((BS, H_FM, W_FM, C_FM))
-    dlt_tg = tf.random.uniform((BS, cfg.N_ANCHOR * H_FM * W_FM, 4))
-    lbl_tg = tf.random.uniform((BS, cfg.N_ANCHOR * H_FM * W_FM, 1))
+    dlt_tg = tf.random.uniform((BS, anchor.N_RPNAC, 4))
+    lbl_tg = tf.random.uniform((BS, anchor.N_RPNAC, 1))
     mdl = setup_model()
     mdl.compile(optimizer="adam", loss="mse")
     history = mdl.fit(inputs, [dlt_tg, lbl_tg], epochs=1)
@@ -33,5 +33,5 @@ def test_rpt_predict() -> None:
     mdl = setup_model()
     inputs = tf.random.uniform((BS, H_FM, W_FM, C_FM))
     dlt, lbl = mdl(inputs)
-    assert dlt.shape == (BS, cfg.N_ANCHOR * H_FM * W_FM, 4)
-    assert lbl.shape == (BS, cfg.N_ANCHOR * H_FM * W_FM, 1)
+    assert dlt.shape == (BS, anchor.N_RPNAC, 4)
+    assert lbl.shape == (BS, anchor.N_RPNAC, 1)

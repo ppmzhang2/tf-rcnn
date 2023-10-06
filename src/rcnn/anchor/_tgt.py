@@ -20,6 +20,8 @@ __all__ = [
 def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
     """Sample `num` anchors from `mask` for a batch of images.
 
+    TODO: more precise sampling
+
     Args:
         mask (tf.Tensor): 0/1 mask of anchors (B, N_ac)
         num (int): number of positive anchors to sample
@@ -35,6 +37,30 @@ def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
         dtype=tf.float32,
     )
     return tf.cast(rand < th, tf.float32) * mask
+
+
+def get_gt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
+    """Get target mask for each anchor based on target boxes for RPN training.
+
+    Args:
+        bx_tgt (tf.Tensor): target ground truth boxes (B, N_ac, 4)
+        bkg (bool, optional): whether to indicate background. Defaults False.
+
+    Returns:
+        tf.Tensor: 0/1 mask for each box (B, N_ac) for each anchor
+    """
+    # 0. coordinate sum of target boxes (B, N_ac):
+    #    - positive: foreground
+    #    - -4.0: background
+    #    - 0.0: ignore
+    _coor_sum = tf.reduce_sum(bx_tgt, axis=-1)
+    # init with tf.float32 zeros
+    mask = tf.zeros_like(_coor_sum, dtype=tf.float32)  # (B, N_ac)
+    if bkg:
+        mask = tf.where(_coor_sum < 0, 1.0, mask)
+        return sample_mask(mask, NUM_NEG_RPN)
+    mask = tf.where(_coor_sum > 0, 1.0, mask)
+    return sample_mask(mask, NUM_POS_RPN)
 
 
 def filter_on_max(x: tf.Tensor) -> tf.Tensor:
@@ -225,27 +251,3 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
     bx_tgt_gtac = get_gt_gtac(bx_ac, bx_gt, idx_gtac, iou_gtac)
     bx_tgt_acgt = get_gt_acgt(bx_ac, bx_gt, idx_acgt, iou_acgt)
     return tf.where(bx_tgt_gtac >= 0, bx_tgt_gtac, bx_tgt_acgt)
-
-
-def get_gt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
-    """Get target mask for each anchor based on target boxes for RPN training.
-
-    Args:
-        bx_tgt (tf.Tensor): target ground truth boxes (B, N_ac, 4)
-        bkg (bool, optional): whether to indicate background. Defaults False.
-
-    Returns:
-        tf.Tensor: 0/1 mask for each box (B, N_ac) for each anchor
-    """
-    # 0. coordinate sum of target boxes (B, N_ac):
-    #    - positive: foreground
-    #    - -4.0: background
-    #    - 0.0: ignore
-    _coor_sum = tf.reduce_sum(bx_tgt, axis=-1)
-    # init with tf.float32 zeros
-    mask = tf.zeros_like(_coor_sum, dtype=tf.float32)  # (B, N_ac)
-    if bkg:
-        mask = tf.where(_coor_sum < 0, 1.0, mask)
-        return sample_mask(mask, NUM_NEG_RPN)
-    mask = tf.where(_coor_sum > 0, 1.0, mask)
-    return sample_mask(mask, NUM_POS_RPN)
