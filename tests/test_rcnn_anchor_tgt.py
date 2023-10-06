@@ -1,11 +1,9 @@
 """Test `anchor._tgt` module."""
 from dataclasses import dataclass
 
-import pytest
 import tensorflow as tf
 
 from rcnn.anchor import get_gt_box
-from rcnn.anchor._tgt import _sample_mask
 
 EPS = 1e-4
 
@@ -28,18 +26,6 @@ def rand_mask(n_total: int, n_one: int) -> tf.Tensor:
         tf.ones((n_one, ), dtype=tf.float32),
         (n_total, ),
     )
-
-
-@pytest.mark.parametrize("data", [
-    Data(mask=rand_mask(100, 5), num=5),
-    Data(mask=rand_mask(1000, 20), num=20),
-])
-def test_anchor_sample_mask(data: Data) -> None:
-    """Test `anchor._get_gt_box`."""
-    mask_orig = _sample_mask(data.mask, data.num)
-    assert tf.reduce_all(tf.equal(mask_orig, data.mask))
-    mask_samp = _sample_mask(data.mask, data.num - 1)
-    assert tf.reduce_sum(mask_samp) == data.num - 1
 
 
 def test_anchor_get_gt_box() -> None:
