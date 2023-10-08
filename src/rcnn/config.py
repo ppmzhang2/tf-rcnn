@@ -3,6 +3,8 @@ import os
 import sys
 from logging.config import dictConfig
 
+import numpy as np
+
 basedir = os.path.abspath(os.path.dirname(__file__))
 srcdir = os.path.abspath(os.path.join(basedir, os.pardir))
 rootdir = os.path.abspath(os.path.join(srcdir, os.pardir))
@@ -51,22 +53,37 @@ class Config:
     MODELDIR = os.path.join(rootdir, "model_config")
 
     # training
+    LR_INIT = 0.001  # Start with this learning rate
+    R_DROP = 0.2  # dropout rate
     DS = "voc/2007"  # dataset name
     DS_PREFIX = "voc_2007"  # prefix for file names
     EPS = 1e-4
 
+    # -------------------------------------------------------------------------
     # model
+    # -------------------------------------------------------------------------
     STRIDE = 32
-    W = 512  # original image width
-    H = 512  # original image height
+    SIZE_RESIZE = 600  # image size for resizing
+    SIZE_IMG = 512  # training image size
+    W = SIZE_IMG  # training image width
+    H = SIZE_IMG  # training image height
     C = 3  # number of channels
     W_FM = W // STRIDE  # feature map width
     H_FM = H // STRIDE  # feature map height
     N_ANCHOR = 9  # number of anchors per grid cell
-    MAX_BOX = 20
     N_SUPP_SCORE = 300  # number of boxes to keep after score suppression
     N_SUPP_NMS = 10  # number of boxes to keep after nms
     NMS_TH = 0.7  # nms threshold
+
+    # -------------------------------------------------------------------------
+    # dataset
+    # -------------------------------------------------------------------------
+    BUFFER_SIZE = 100  # buffer size for shuffling
+    N_OBJ = 20  # ensure that each image has the same number of objects
+    BATCH_SIZE_TR = 4  # TODO: error if >= 8
+    BATCH_SIZE_TE = 32
+    IMGNET_STD = np.array([58.393, 57.12, 57.375], dtype=np.float32)
+    IMGNET_MEAN = np.array([123.68, 116.78, 103.94], dtype=np.float32)
 
 
 class TestConfig(Config):

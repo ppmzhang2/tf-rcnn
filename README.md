@@ -31,7 +31,7 @@ set -Ux XLA_FLAGS --xla_gpu_cuda_data_dir=$CONDA_PREFIX
 Train the RPN part:
 
 ```bash
-tf-rcnn train-rpn --epochs=5 --save-intv=10 --batch=32
+tf-rcnn train-rpn --epochs=10
 ```
 
 Predict the region of interest (ROI):
@@ -44,6 +44,13 @@ Result of the ROI prediction after 5 epochs:
 
 ![ROI prediction](img/voc_2007_test_rpn_0017.jpg)
 
+Performance of the ROI prediction after 5 epochs:
+
+## All in One Scripts
+
+- [RPN Training](rpn_train_ain1.py)
+
 ## References
 
 - [Setup tensorflow 2.12 on casper](https://github.com/NCAR/casper_tensorflow_gpu)
+- [Customizing what happens in `fit()`](https://www.tensorflow.org/guide/keras/customizing_what_happens_in_fit)

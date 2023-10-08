@@ -16,7 +16,9 @@ def setup_model() -> Model:
 
 def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Set up the inputs / outputs."""
-    b = 16  # batch size
+    # batch size, must be same as cfg.BATCH_SIZE_TR
+    # TODO: customizable batch size
+    b = 4
     inputs = tf.random.uniform((b, cfg.H, cfg.W, cfg.C))
     rois = tf.random.uniform((b, cfg.N_SUPP_NMS, 4))  # (B, N_rois, 4)
     logits = tf.random.uniform((b, anchor.N_RPNAC, 1))
@@ -30,7 +32,7 @@ def test_rpt_training() -> None:
     inputs, rois, logits, deltas, boxes = setup_io()
     model = setup_model()
     model.compile(optimizer="adam", loss="mse")
-    history = model.fit(inputs, [rois, logits, deltas, boxes], epochs=1)
+    history = model.fit(x=inputs, y=[deltas, logits], epochs=1)
     assert history.history["loss"][0] > 0
 
 
@@ -39,7 +41,6 @@ def test_rpt_predict() -> None:
     model = setup_model()
     inputs, rois, logits, deltas, boxes = setup_io()
     output = model(inputs)
-    assert output[0].shape == rois.shape
+    assert output[0].shape == deltas.shape
     assert output[1].shape == logits.shape
-    assert output[2].shape == deltas.shape
-    assert output[3].shape == boxes.shape
+    assert output[2].shape == rois.shape

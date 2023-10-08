@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from _pytest.monkeypatch import MonkeyPatch
 
-from rcnn import vis
+from rcnn import data
 
 
 def test_vis_draw_pred() -> None:
@@ -16,7 +16,7 @@ def test_vis_draw_pred() -> None:
     names = ["Object"]
 
     # Draw prediction on the image
-    img_with_pred = vis.draw_pred(img, bboxes, labels, names)
+    img_with_pred = data.draw_pred(img, bboxes, labels, names)
 
     # Check types and shapes
     assert isinstance(img_with_pred, np.ndarray)
@@ -30,7 +30,7 @@ def test_vis_draw_rois() -> None:
     rois = tf.constant([[0.1, 0.2, 0.6, 0.8]])
 
     # Draw ROIs on the image
-    img_with_rois = vis.draw_rois(img, rois)
+    img_with_rois = data.draw_rois(img, rois)
 
     # Check types and shapes
     assert isinstance(img_with_rois, np.ndarray)
@@ -52,4 +52,4 @@ def test_vis_show_image(monkeypatch: MonkeyPatch) -> None:
 
     # Test show_image
     img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-    vis.show_image(img)  # Should not crash
+    data.show_image(img)  # Should not crash
