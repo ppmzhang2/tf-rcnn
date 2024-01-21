@@ -3,7 +3,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 from rcnn import cfg
-from rcnn.data import ds_handler
+from rcnn.data._ds import preprcs_tr
 
 
 def setup_io() -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
@@ -15,7 +15,7 @@ def test_data_ds_handler() -> None:
     """Test the `data.ds_handler` function."""
     ds = setup_io()
     for example in ds.take(1):
-        img, bx, lbl = ds_handler(example)
+        img, (bx, lbl) = preprcs_tr(example)
         assert img.shape == (cfg.H, cfg.W, 3)
-        assert bx.shape == (cfg.MAX_BOX, 4)
-        assert lbl.shape == (cfg.MAX_BOX, 1)
+        assert bx.shape == (cfg.N_OBJ, 4)
+        assert lbl.shape == (cfg.N_OBJ, 1)

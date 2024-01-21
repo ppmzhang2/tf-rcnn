@@ -28,15 +28,19 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
             - deltas: (n_batch, N_VAL_AC, 4)
             - labels: (n_batch, N_VAL_AC, 1)
     """
-    # processed feature map (n_batch, h_fm, w_fm, 512)
+    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
     fm = tf.keras.layers.Conv2D(
-        512,
+        cfg.SIZE_IMG,
         (3, 3),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_fm),
+        kernel_regularizer=reg_l2,
         padding="same",
-        activation="relu",
+        activation=None,
         name="rpn_share",
-    )(fm)
+    )(fm)  # (n_batch, h_fm, w_fm, SIZE_IMG)
+    fm = tf.keras.layers.GroupNormalization()(fm)
+    fm = tf.keras.layers.Activation("relu")(fm)
+    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
 
     # predicted deltas
     dlt = tf.keras.layers.Conv2D(
@@ -47,6 +51,8 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         activation=None,
         name="rpn_dlt",
     )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
+    # TBD: Noralization or not?
+    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
 
     # predicted logits
     log = tf.keras.layers.Conv2D(
@@ -57,6 +63,8 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         activation=None,
         name="rpn_log",
     )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR)
+    # TBD: Noralization or not?
+    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
 
     # flatten the tensors
     # shape: (B, H_FM * W_FM * N_ANCHOR, 4) and (B, H_FM * W_FM * N_ANCHOR, 1)

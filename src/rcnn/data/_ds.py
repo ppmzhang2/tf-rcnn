@@ -4,74 +4,140 @@ import tensorflow_datasets as tfds
 
 from rcnn import cfg
 
+SIZE_RESIZE = 600  # image size for resizing
 
-def ratio_resize(
-    img: tf.Tensor,
-    bbx: tf.Tensor,
-    h_img: int,
-    w_img: int,
-    *,
-    relative_coord: bool = True,
-) -> tuple[tf.Tensor, tf.Tensor]:
+
+def resize(img: tf.Tensor, size: int) -> tf.Tensor:
     """Resize an image and bounding boxes while preserving its aspect ratio.
 
     Args:
         img (tf.Tensor): image to resize
         bbx (tf.Tensor): bounding boxes to resize
-        h_img (int): desired height of the image
-        w_img (int): desired width of the image
-        relative_coord (bool, optional): whether the bounding boxes are in
-            relative coordinates. Defaults to True.
+        size (int): desired size of the shorter side of the image
+        keep_ratio (bool, optional): whether to keep the aspect ratio.
 
     Returns:
         tuple[tf.Tensor, tf.Tensor]: resized image and bounding boxes
     """
     h, w, _ = tf.unstack(tf.shape(img))
-    scale_h = tf.cast(h_img / h, tf.float32)
-    scale_w = tf.cast(w_img / w, tf.float32)
-    scale = tf.minimum(scale_h, scale_w)
+    scale = tf.maximum(
+        tf.cast(size / h, tf.float32),
+        tf.cast(size / w, tf.float32),
+    )  # scale to the shorter side
     new_h = tf.cast(tf.round(tf.cast(h, tf.float32) * scale), tf.int32)
     new_w = tf.cast(tf.round(tf.cast(w, tf.float32) * scale), tf.int32)
     img = tf.image.resize(img, [new_h, new_w])
-    if not relative_coord:
-        bbx = bbx * scale
-    return img, bbx
+    return img
 
 
-def image_pad(
+def rand_crop(
     img: tf.Tensor,
     bbx: tf.Tensor,
-    h_img: int,
-    w_img: int,
-    *,
-    relative_coord: bool = True,
+    h_target: int,
+    w_target: int,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Pads an image and bounding boxes to a fixed size.
+    """Randomly crops an image and adjusts the bounding boxes.
 
     Args:
-        img (tf.Tensor): image to pad
-        bbx (tf.Tensor): bounding boxes to pad
-        h_img (int): desired height of the image
-        w_img (int): desired width of the image
-        relative_coord (bool, optional): whether the bounding boxes are in
-            relative coordinates. Defaults to True.
+        img (tf.Tensor): Tensor representing the image.
+        bbx (tf.Tensor): Tensor of bounding boxes in relative coordinates,
+        shape [num_boxes, 4].
+        h_target (int): Target height for the cropped image.
+        w_target (int): Target width for the cropped image.
 
     Returns:
-        tuple[tf.Tensor, tf.Tensor]: padded image and bounding boxes
+        tuple[tf.Tensor, tf.Tensor]: Cropped image and adjusted bounding boxes.
     """
-    image_h, image_w, _ = tf.unstack(tf.shape(img))
-    pad_height = h_img - image_h
-    pad_width = w_img - image_w
-    img = tf.pad(img, paddings=[[0, pad_height], [0, pad_width], [0, 0]])
-    if relative_coord:
-        abs_boxes = bbx * tf.cast(
-            tf.stack([image_h, image_w, image_h, image_w]),
-            tf.float32,
+    h_img, w_img, _ = tf.unstack(tf.shape(img))
+    max_h_offset = h_img - h_target - 1
+    max_w_offset = w_img - w_target - 1
+
+    # Randomly choosing the offset for cropping
+    h_offset = tf.random.uniform(shape=[],
+                                 minval=0,
+                                 maxval=max_h_offset,
+                                 dtype=tf.int32)
+    w_offset = tf.random.uniform(shape=[],
+                                 minval=0,
+                                 maxval=max_w_offset,
+                                 dtype=tf.int32)
+
+    # Cropping the image
+    img_crop = tf.image.crop_to_bounding_box(img, h_offset, w_offset, h_target,
+                                             w_target)
+
+    # Adjust bounding boxes
+    # Scale bounding box coordinates to the cropped image size
+    ymin, xmin, ymax, xmax = bbx[..., 0], bbx[..., 1], bbx[..., 2], bbx[..., 3]
+
+    # Clip bounding boxes to be within the cropped image
+    ymin = (ymin * tf.cast(h_img, tf.float32) -
+            tf.cast(h_offset, tf.float32)) / tf.cast(h_target, tf.float32)
+    ymax = (ymax * tf.cast(h_img, tf.float32) -
+            tf.cast(h_offset, tf.float32)) / tf.cast(h_target, tf.float32)
+    xmin = (xmin * tf.cast(w_img, tf.float32) -
+            tf.cast(w_offset, tf.float32)) / tf.cast(w_target, tf.float32)
+    xmax = (xmax * tf.cast(w_img, tf.float32) -
+            tf.cast(w_offset, tf.float32)) / tf.cast(w_target, tf.float32)
+
+    # Clip bounding boxes to be within the cropped image
+    bbx_clip = tf.stack(
+        [
+            tf.clip_by_value(ymin, 0, 1),
+            tf.clip_by_value(xmin, 0, 1),
+            tf.clip_by_value(ymax, 0, 1),
+            tf.clip_by_value(xmax, 0, 1),
+        ],
+        axis=1,
+    )
+
+    return img_crop, bbx_clip
+
+
+def data_augmentation(
+    img: tf.Tensor,
+    bbx: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Apply data augmentation to the image and adjust bounding boxes.
+
+    Args:
+        img (tf.Tensor): Input image
+        bbx (tf.Tensor): Bounding boxes associated with the image
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor]: Augmented image and adjusted bounding
+        boxes
+    """
+    # Randomly choose a data augmentation technique
+    augmentation_choice = tf.random.uniform(
+        (),
+        minval=0,
+        maxval=3,
+        dtype=tf.int32,
+    )
+
+    if augmentation_choice == 0:
+        # Horizontal flip
+        img = tf.image.flip_left_right(img)
+        # Flip bounding boxes
+        ymin, xmin, ymax, xmax = tf.unstack(bbx, axis=1)
+        flipped_bbx = tf.stack([ymin, 1.0 - xmax, ymax, 1.0 - xmin], axis=1)
+        bbx = flipped_bbx
+    elif augmentation_choice == 1:
+        # Gaussian noise
+        noise = tf.random.normal(
+            shape=tf.shape(img),
+            mean=0.0,
+            stddev=0.02,
+            dtype=tf.float32,
         )
-        bbx = abs_boxes / tf.cast(
-            tf.stack([cfg.H, cfg.W, cfg.H, cfg.W]),
-            tf.float32,
-        )
+        img = img + noise
+    elif augmentation_choice == 2:  # noqa: PLR2004
+        # Random brightness
+        img = tf.image.random_brightness(img, max_delta=0.1)
+
+    # no need to clip the bounding boxes as we use normalized coordinates
+
     return img, bbx
 
 
@@ -101,8 +167,8 @@ def batch_pad(
     return tensor
 
 
-def ds_handler(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Preprocesses a sample from the dataset.
+def preprcs_tr(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Preprocesses a sample from the training dataset.
 
     Args:
         sample (dict): sample from the dataset
@@ -122,22 +188,67 @@ def ds_handler(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
             - labels: [batch_size, max_box, 1]
     """
     img = sample["image"]
-    img = tf.cast(img, tf.float32) / 255.0
+    # Normalize the image with ImageNet mean and std
+    img = (tf.cast(img, dtype=tf.float32) - cfg.IMGNET_MEAN) / cfg.IMGNET_STD
 
     # Get the bounding boxes and labels
     bbx = sample["objects"]["bbox"]
     lbl = sample["objects"]["label"]
 
     # resize the image and bounding boxes while preserving the aspect ratio
-    img, bbx = ratio_resize(img, bbx, cfg.H, cfg.W)
-    # Pad to a fixed size
-    img, bbx = image_pad(img, bbx, cfg.H, cfg.W)
+    img = resize(img, cfg.SIZE_RESIZE)
+    # randomly crop the image and bounding boxes
+    img, bbx = rand_crop(img, bbx, cfg.SIZE_IMG, cfg.SIZE_IMG)
+    # Data augmentation: Random horizontal flip
+    img, bbx = data_augmentation(img, bbx)
 
     # pad the labels and bounding boxes to a fixed size
-    bbx = batch_pad(bbx, max_box=cfg.MAX_BOX, value=0)
-    lbl = batch_pad(lbl[:, tf.newaxis], max_box=cfg.MAX_BOX, value=-1)
+    bbx = batch_pad(bbx, max_box=cfg.N_OBJ, value=0)
+    lbl = batch_pad(lbl[:, tf.newaxis], max_box=cfg.N_OBJ, value=-1)
 
-    return img, bbx, lbl
+    return img, (bbx, lbl)
+
+
+def preprcs_te(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Preprocess test dataset samples.
+
+    Args:
+        sample (dict): sample from the dataset
+        e.g. {
+            "image": tf.Tensor,
+            "objects": {
+                "bbox": tf.Tensor,
+                "label": tf.Tensor,
+            },
+        }
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor, tf.Tensor]: images, bounding boxes, and
+            labels
+            - images: [batch_size, H, W, 3]
+            - bounding boxes: [batch_size, max_box, 4] in relative coordinates
+            - labels: [batch_size, max_box, 1]
+
+    TODO: predict with full-sized images
+    """
+    img = sample["image"]
+    # Normalize the image with ImageNet mean and std
+    img = (tf.cast(img, dtype=tf.float32) - cfg.IMGNET_MEAN) / cfg.IMGNET_STD
+
+    # Get the bounding boxes and labels
+    bbx = sample["objects"]["bbox"]
+    lbl = sample["objects"]["label"]
+
+    # resize the image and bounding boxes while preserving the aspect ratio
+    img = resize(img, cfg.SIZE_RESIZE)
+    # randomly crop the image and bounding boxes
+    img, bbx = rand_crop(img, bbx, cfg.SIZE_IMG, cfg.SIZE_IMG)
+
+    # pad the labels and bounding boxes to a fixed size
+    bbx = batch_pad(bbx, max_box=cfg.N_OBJ, value=0)
+    lbl = batch_pad(lbl[:, tf.newaxis], max_box=cfg.N_OBJ, value=-1)
+
+    return img, (bbx, lbl)
 
 
 def load_train_valid(
@@ -169,29 +280,27 @@ def load_train_valid(
         with_info=True,
     )
     ds_tr = ds_tr.map(
-        ds_handler,
+        preprcs_tr,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).batch(n_tr).prefetch(tf.data.experimental.AUTOTUNE)
+    ).shuffle(cfg.BUFFER_SIZE).batch(n_tr).prefetch(
+        tf.data.experimental.AUTOTUNE)
     ds_va = ds_va.map(
-        ds_handler,
+        preprcs_tr,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
+    ).shuffle(cfg.BUFFER_SIZE).batch(n_te).prefetch(
+        tf.data.experimental.AUTOTUNE)
     return ds_tr, ds_va, ds_info
 
 
 def load_test(
     name: str,
     n_te: int,
-    *,
-    shuffle: bool = False,
 ) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
     """Loads the testing dataset.
 
     Args:
         name (str): name of the dataset
         n_te (int): number of testing samples
-        shuffle (bool, optional): whether to shuffle the dataset. Defaults to
-            False.
 
     Returns:
         tuple[tf.data.Dataset, tfds.core.DatasetInfo]: testing dataset and
@@ -205,11 +314,11 @@ def load_test(
     ds_te, ds_info = tfds.load(
         name,
         split="validation",
-        shuffle_files=shuffle,
+        shuffle_files=False,
         with_info=True,
     )
     ds_te = ds_te.map(
-        ds_handler,
+        preprcs_te,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
     return ds_te, ds_info
