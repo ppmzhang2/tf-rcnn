@@ -35,9 +35,9 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
 
     Args:
         bbox_l (tf.Tensor): minuend bbox tensor (left operand) of shape
-            (N1, N2, ..., Nk, C), where C >= 4
+            (N1, N2, ..., Nk, C), where C >= 4, or other broadcastable shape
         bbox_r (tf.Tensor): subtrahend bbox tensor (right operand) of shape
-            (N1, N2, ..., Nk, C), where C >= 4
+            (N1, N2, ..., Nk, C), where C >= 4, or other broadcastable shape
 
     Returns:
         tf.Tensor: delta tensor of shape (N1, N2, ..., Nk, 4)

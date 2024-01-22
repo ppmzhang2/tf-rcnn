@@ -20,8 +20,10 @@ def roi(dlt: tf.Tensor) -> tf.Tensor:
             box delta, and RoIs. All are filtered by valid anchor masks.
             Shape [B, N_VAL_AC, 1], [B, N_VAL_AC, 4], and [B, N_VAL_AC, 4].
     """
-    # Computing YXYX RoIs from deltas.
-    rois = anchor.delta2bbox(AC_VAL, dlt)  # (B, N_VAL_AC, 4)
+    bsize = tf.shape(dlt)[0]
+    # Computing YXYX RoIs from deltas. output shape: (B, N_VAL_AC, 4)
+    rois = anchor.delta2bbox(tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0),
+                             dlt)
     # clip the RoIs
     rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, N_VAL_AC, 4)
 

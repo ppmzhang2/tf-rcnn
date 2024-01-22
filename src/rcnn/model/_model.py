@@ -5,13 +5,10 @@ from rcnn import anchor
 from rcnn import cfg
 from rcnn import risk
 from rcnn.model._base import get_vgg16
+from rcnn.model._roi import AC_VAL
 from rcnn.model._roi import roi
 from rcnn.model._rpn import rpn
 from rcnn.model._suppress import suppress
-
-ac = tf.constant(anchor.RPNAC, dtype=tf.float32)  # (N_ac, 4)
-bx_ac = tf.repeat(ac[tf.newaxis, ...], cfg.BATCH_SIZE_TR,
-                  axis=0)  # (B, N_ac, 4)
 
 __all__ = [
     "ModelRPN",
@@ -34,10 +31,18 @@ class ModelRPN(tf.keras.Model):
         """The logic for one training step."""
         x, (bx_gt, _) = data
 
+        bsize = tf.shape(x)[0]
+        # create anchors with matching batch size (B, N_ac, 4)
+        # NOTE: cannot use a constant batch size as the last batch may have a
+        # different size
+        ac_ = tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0)
+
         with tf.GradientTape() as tape:
             dlt, log, bx_sup = self(x, training=True)
-            bx_tgt = anchor.get_gt_box(bx_ac, bx_gt)
-            dlt_tgt = anchor.bbox2delta(bx_tgt, bx_ac)
+            # NOTE: cannot use broadcasting for performance
+            bx_tgt = anchor.get_gt_box(ac_, bx_gt)
+            # NOTE: cannot use broadcasting for performance
+            dlt_tgt = anchor.bbox2delta(bx_tgt, ac_)
             mask_obj = anchor.get_gt_mask(bx_tgt, bkg=False)
             mask_bkg = anchor.get_gt_mask(bx_tgt, bkg=True)
             loss = risk.risk_rpn(dlt, dlt_tgt, log, mask_obj, mask_bkg)

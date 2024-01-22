@@ -80,8 +80,6 @@ class Config:
     # -------------------------------------------------------------------------
     BUFFER_SIZE = 100  # buffer size for shuffling
     N_OBJ = 20  # ensure that each image has the same number of objects
-    BATCH_SIZE_TR = 4  # TODO: error if >= 8
-    BATCH_SIZE_TE = 32
     IMGNET_STD = np.array([58.393, 57.12, 57.375], dtype=np.float32)
     IMGNET_MEAN = np.array([123.68, 116.78, 103.94], dtype=np.float32)
 

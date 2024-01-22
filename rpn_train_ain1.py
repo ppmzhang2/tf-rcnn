@@ -27,7 +27,7 @@ NMS_TH = 0.7  # nms threshold
 
 # dataset
 BUFFER_SIZE = 100
-BATCH_SIZE_TR = 4
+BATCH_SIZE_TR = 8
 BATCH_SIZE_TE = 32
 
 # RPN
@@ -171,11 +171,11 @@ def batch_pad(
     return tensor
 
 
-def data_augmentation(
+def data_augment(
     img: tf.Tensor,
     bbx: tf.Tensor,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Apply data augmentation to the image and adjust bounding boxes.
+    """Apply at most one data augmentation to the image and bounding boxes.
 
     Args:
         img (tf.Tensor): Input image
@@ -183,25 +183,23 @@ def data_augmentation(
 
     Returns:
         tuple[tf.Tensor, tf.Tensor]: Augmented image and adjusted bounding
-        boxes
+        boxes.
     """
-    # Randomly choose a data augmentation technique
-    augmentation_choice = tf.random.uniform(
-        (),
-        minval=0,
-        maxval=3,
-        dtype=tf.int32,
-    )
+    # Proportion for each operation and idle
+    proportion = 0.25
 
-    if augmentation_choice == 0:
-        # Horizontal flip
+    # Random number for choosing the augmentation or idle
+    rand_aug = tf.random.uniform((), minval=0, maxval=1, dtype=tf.float32)
+
+    # Horizontal flip
+    if 0 <= rand_aug < 1 * proportion:
         img = tf.image.flip_left_right(img)
-        # Flip bounding boxes
         ymin, xmin, ymax, xmax = tf.unstack(bbx, axis=1)
         flipped_bbx = tf.stack([ymin, 1.0 - xmax, ymax, 1.0 - xmin], axis=1)
         bbx = flipped_bbx
-    elif augmentation_choice == 1:
-        # Gaussian noise
+
+    # Gaussian noise
+    elif 1 * proportion <= rand_aug < 2 * proportion:
         noise = tf.random.normal(
             shape=tf.shape(img),
             mean=0.0,
@@ -209,11 +207,12 @@ def data_augmentation(
             dtype=tf.float32,
         )
         img = img + noise
-    elif augmentation_choice == 2:  # noqa: PLR2004
-        # Random brightness
+
+    # Random brightness
+    elif 2 * proportion <= rand_aug < 3 * proportion:
         img = tf.image.random_brightness(img, max_delta=0.1)
 
-    # no need to clip the bounding boxes as we use normalized coordinates
+    # No operation is done in the range [3 * proportion, 1]
 
     return img, bbx
 
@@ -250,8 +249,8 @@ def preprcs_tr(sample: dict) -> tuple[tf.Tensor, tuple[tf.Tensor]]:
     # randomly crop the image and bounding boxes
     img, bbx = rand_crop(img, bbx, SIZE_IMG, SIZE_IMG)
 
-    # Data augmentation: Random horizontal flip
-    img, bbx = data_augmentation(img, bbx)
+    # randomly augment the image and bounding boxes
+    img, bbx = data_augment(img, bbx)
 
     # pad the labels and bounding boxes to a fixed size
     bbx = batch_pad(bbx, max_box=MAX_BOX, value=0)
@@ -495,8 +494,8 @@ N_RPNAC = int(MASK_RPNAC.sum())
 RPNAC.flags.writeable = False
 MASK_RPNAC.flags.writeable = False
 
-ac = tf.constant(RPNAC, dtype=tf.float32)  # (N_ac, 4)
-bx_ac = tf.repeat(ac[tf.newaxis, ...], BATCH_SIZE_TR, axis=0)  # (B, N_ac, 4)
+# valid anchors
+AC_VAL = tf.constant(RPNAC, dtype=tf.float32)  # (N_VAL_AC, 4)
 
 # =============================================================================
 # SECTION: YXYX bounding boxes.
@@ -829,11 +828,6 @@ def dh(delta: tf.Tensor) -> tf.Tensor:
     return delta[..., 3]
 
 
-# Buffer to clip the RoIs. Defaults to 1e-1.
-BUFFER = 1e-1
-# valid anchors
-AC_VAL = tf.constant(RPNAC, dtype=tf.float32)  # (N_VAL_AC, 4)
-
 # =============================================================================
 # SECTION: utils
 # =============================================================================
@@ -1138,6 +1132,9 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
 # SECTION: models
 # =============================================================================
 
+# Buffer to clip the RoIs. Defaults to 1e-1.
+BUFFER = 1e-1
+
 
 def roi(dlt: tf.Tensor) -> tf.Tensor:
     """Get RoI bounding boxes from anchor deltas.
@@ -1150,34 +1147,13 @@ def roi(dlt: tf.Tensor) -> tf.Tensor:
             box delta, and RoIs. All are filtered by valid anchor masks.
             Shape [B, N_VAL_AC, 1], [B, N_VAL_AC, 4], and [B, N_VAL_AC, 4].
     """
-    # Computing YXYX RoIs from deltas.
-    rois = delta2bbox(AC_VAL, dlt)  # (B, N_VAL_AC, 4)
+    bsize = tf.shape(dlt)[0]
+    # Computing YXYX RoIs from deltas. output shape: (B, N_VAL_AC, 4)
+    rois = delta2bbox(tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0), dlt)
     # clip the RoIs
     rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, N_VAL_AC, 4)
 
     return rois
-
-
-def get_vgg16(h: int, w: int) -> tf.keras.Model:
-    """Get VGG16 model.
-
-    Args:
-        h (int): Height of input image.
-        w (int): Width of input image.
-
-    Returns:
-        tf.keras.Model: pre-trained VGG16 model without top layers for feature
-            extraction.
-    """
-    mdl = tf.keras.applications.vgg16.VGG16(
-        weights="imagenet",
-        include_top=False,
-        input_shape=(h, w, 3),
-    )
-    # Freeze all layers
-    for layer in mdl.layers:
-        layer.trainable = False
-    return mdl
 
 
 def get_abs_roi(fm: tf.Tensor, rois: tf.Tensor) -> tf.Tensor:
@@ -1225,7 +1201,11 @@ seed_cnn_dlt = hash(seed_cnn_fm) % (2**32)
 seed_cnn_lbl = hash(seed_cnn_dlt) % (2**32)
 
 
-def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
+def rpn(
+    fm: tf.Tensor,
+    h_fm: int,
+    w_fm: int,
+) -> tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]:
     """Region Proposal Network (RPN).
 
     Args:
@@ -1234,14 +1214,16 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         w_fm (int): The width of the feature map.
 
     Returns:
-        tuple[tf.Tensor, tf.Tensor]: predicted deltas and labels.
+        tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]: predicted
+        deltas, labels, and the RPN layers for weight freezing.
             - deltas: (n_batch, N_VAL_AC, 4)
             - labels: (n_batch, N_VAL_AC, 1)
     """
-    # dropout
-    fm = tf.keras.layers.Dropout(R_DROP)(fm)
-    # processed feature map (n_batch, h_fm, w_fm, SIZE_IMG)
-    fm = tf.keras.layers.Conv2D(
+    layer_drop_entr = tf.keras.layers.Dropout(
+        R_DROP,
+        name="rpn_dropout_entr",
+    )  # entrance dropout
+    layer_conv_share = tf.keras.layers.Conv2D(
         SIZE_IMG,
         (3, 3),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_fm),
@@ -1249,34 +1231,49 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         padding="same",
         activation=None,
         name="rpn_share",
-    )(fm)
-    fm = tf.keras.layers.GroupNormalization()(fm)
-    fm = tf.keras.layers.Activation("relu")(fm)
-    fm = tf.keras.layers.Dropout(R_DROP)(fm)
+    )  # shared convolutional layer
+    layer_gn_share = tf.keras.layers.GroupNormalization()
+    layer_relu_share = tf.keras.layers.Activation("relu")
+    layer_drop_share = tf.keras.layers.Dropout(R_DROP)
 
-    # predicted deltas
-    dlt = tf.keras.layers.Conv2D(
+    # (n_batch, h_fm, w_fm, SIZE_IMG)
+    fm = layer_drop_entr(fm)
+    fm = layer_conv_share(fm)
+    fm = layer_gn_share(fm)
+    fm = layer_relu_share(fm)
+    fm = layer_drop_share(fm)
+
+    # deltas
+    layer_conv_dlt = tf.keras.layers.Conv2D(
         N_ANCHOR * 4,
         (1, 1),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_dlt),
         kernel_regularizer=reg_l2,
         activation=None,
         name="rpn_dlt",
-    )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
-    # TBD: Noralization or not?
-    fm = tf.keras.layers.Dropout(R_DROP)(fm)
+    )
+    layer_bn_dlt = tf.keras.layers.BatchNormalization()
+    layer_drop_dlt = tf.keras.layers.Dropout(R_DROP)
+    # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
+    dlt = layer_conv_dlt(fm)
+    dlt = layer_bn_dlt(dlt)
+    dlt = layer_drop_dlt(dlt)
 
-    # predicted logits
-    log = tf.keras.layers.Conv2D(
+    # logits objectness score
+    layer_conv_log = tf.keras.layers.Conv2D(
         N_ANCHOR,
         (1, 1),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_lbl),
         kernel_regularizer=reg_l2,
         activation=None,
         name="rpn_log",
-    )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR)
-    # TBD: Noralization or not?
-    fm = tf.keras.layers.Dropout(R_DROP)(fm)
+    )
+    layer_bn_log = tf.keras.layers.BatchNormalization()
+    layer_drop_log = tf.keras.layers.Dropout(R_DROP)
+    # (n_batch, h_fm, w_fm, N_ANCHOR)
+    log = layer_conv_log(fm)
+    log = layer_bn_log(log)
+    log = layer_drop_log(log)
 
     # flatten the tensors
     # shape: (B, H_FM * W_FM * N_ANCHOR, 4) and (B, H_FM * W_FM * N_ANCHOR, 1)
@@ -1289,8 +1286,23 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
     log_val = tf.boolean_mask(log_flat, MASK_AC == 1, axis=1)
 
     # for shape inference
-    return (tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
-            tf.reshape(log_val, (-1, N_VAL_AC, 1)))
+    return (
+        tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
+        tf.reshape(log_val, (-1, N_VAL_AC, 1)),
+        [
+            layer_drop_entr,
+            layer_conv_share,
+            layer_gn_share,
+            layer_relu_share,
+            layer_drop_share,
+            layer_conv_dlt,
+            layer_bn_dlt,
+            layer_drop_dlt,
+            layer_conv_log,
+            layer_bn_log,
+            layer_drop_log,
+        ],
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1525,10 +1537,9 @@ def mean_ap_rpn(
 # SECTION: Training
 # =============================================================================
 
-LR_INIT = 0.001  # Start with this learning rate
+LR_INIT = 0.002  # CANNOT be too large
 LR_DECAY_FACTOR = 0.1  # Factor to reduce the learning rate
 STEP_SIZE = 4  # Decay the learning rate every 'step_size' epochs
-N_EPOCH = 40  # Number of epochs to train for
 
 
 class ModelRPN(tf.keras.Model):
@@ -1547,10 +1558,21 @@ class ModelRPN(tf.keras.Model):
         """The logic for one training step."""
         x, (bx_gt, _) = data
 
+        bsize = tf.shape(x)[0]
+        # create anchors with matching batch size (B, N_ac, 4)
+        # NOTE: cannot use a constant batch size as the last batch may have a
+        # different size
+        ac_ = tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0)
+
         with tf.GradientTape() as tape:
+            # In TF2, the `training` flag affects, during both training and
+            # inference, behavior of layers such as normalization (e.g. BN)
+            # and dropout.
             dlt, log, bx_sup = self(x, training=True)
-            bx_tgt = get_gt_box(bx_ac, bx_gt)
-            dlt_tgt = bbox2delta(bx_tgt, bx_ac)
+            # NOTE: cannot use broadcasting for performance
+            bx_tgt = get_gt_box(ac_, bx_gt)
+            # NOTE: cannot use broadcasting for performance
+            dlt_tgt = bbox2delta(bx_tgt, ac_)
             mask_obj = get_gt_mask(bx_tgt, bkg=False)
             mask_bkg = get_gt_mask(bx_tgt, bkg=True)
             loss = risk_rpn(dlt, dlt_tgt, log, mask_obj, mask_bkg)
@@ -1606,6 +1628,42 @@ class ModelRPN(tf.keras.Model):
         return {"meanap": self.mean_ap.result()}
 
 
+def get_rpn_model(
+    *,
+    freeze_backbone: bool = False,
+    freeze_rpn: bool = False,
+) -> ModelRPN:
+    """Create a RPN model for training or prediction."""
+    # VGG16 Backbone
+    vgg16 = tf.keras.applications.vgg16.VGG16(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(H, W, 3),
+    )
+
+    # Add RPN layers on top of the backbone
+    tmp_dlt, tmp_log, rpn_layers = rpn(vgg16.output, H_FM, W_FM)
+    bbx = roi(tmp_dlt)
+    sup_box = suppress(bbx, tmp_log, N_SUPP_SCORE, N_SUPP_NMS, NMS_TH)
+
+    # Freeze all layers in the backbone for training
+    if freeze_backbone:
+        for layer in vgg16.layers:
+            layer.trainable = False
+    # Freeze all layers in the RPN for training
+    if freeze_rpn:
+        for layer in rpn_layers:
+            layer.trainable = False
+
+    # Create the ModelRPN instance
+    model = ModelRPN(
+        inputs=vgg16.input,
+        outputs=[tmp_dlt, tmp_log, sup_box],
+    )
+
+    return model
+
+
 # # Step Decay Learning Rate Scheduler
 # def lr_schedule(epoch: int) -> float:
 #     """Learning rate schedule."""
@@ -1614,24 +1672,36 @@ class ModelRPN(tf.keras.Model):
 # cb_lr = tf.keras.callbacks.LearningRateScheduler(lr_schedule)
 
 # Callbacks
-cb_checkpoint = tf.keras.callbacks.ModelCheckpoint(
-    filepath="model_weights/rpn_ckpt",
-    monitor="val_meanap",
-    save_best_only=True,
-    save_weights_only=True,
-    mode="max",
-)
+PATH_CKPT_RPN = "model_weights/rpn/ckpt"
+PATH_CKPT_FINETUNE = "model_weights/rpn_finetune/ckpt"
+
+
+def get_cb_ckpt(path: str) -> tf.keras.callbacks.ModelCheckpoint:
+    """Get callback for saving model weights."""
+    return tf.keras.callbacks.ModelCheckpoint(
+        filepath=path,
+        monitor="val_meanap",
+        save_best_only=True,
+        save_weights_only=True,
+        mode="max",
+    )
+
+
 cb_earlystop = tf.keras.callbacks.EarlyStopping(
     monitor="val_meanap",
-    patience=6,
+    patience=30,
     mode="max",
     restore_best_weights=True,
 )
 cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
     monitor="val_meanap",
+    mode="max",
     factor=0.5,
-    patience=3,
-    min_lr=0.0001,
+    patience=2,
+    cooldown=4,
+    min_lr=1e-8,
+    min_delta=0.0001,
+    verbose=1,
 )
 
 # # Adam Optimizer
@@ -1646,19 +1716,23 @@ optimizer = tf.keras.optimizers.SGD(learning_rate=LR_INIT, momentum=0.9)
 
 ds_tr, ds_va, _ = load_train_valid(DS, BATCH_SIZE_TR, BATCH_SIZE_TE)
 
-vgg16 = get_vgg16(H, W)
-tmp_dlt, tmp_log = rpn(vgg16.output, H_FM, W_FM)
-bbx = roi(tmp_dlt)
-# sup_box = suppress_score(bbx, tmp_log, N_SUPP_SCORE)
-sup_box = suppress(bbx, tmp_log, N_SUPP_SCORE, N_SUPP_NMS, NMS_TH)
-model = ModelRPN(
-    inputs=vgg16.input,
-    outputs=[tmp_dlt, tmp_log, sup_box],
-)
+# training
+model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
 model.compile(optimizer=optimizer)
 model.fit(
     ds_tr,
-    epochs=N_EPOCH,
+    epochs=100,
     validation_data=ds_va,
-    callbacks=[cb_checkpoint, cb_earlystop, cb_lr],
+    callbacks=[get_cb_ckpt(PATH_CKPT_RPN), cb_earlystop, cb_lr],
 )
+
+# # fine-tuning
+# model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
+# model.load_weights(PATH_CKPT_RPN)
+# model.compile(optimizer=optimizer)
+# model.fit(
+#     ds_tr,
+#     epochs=100,
+#     validation_data=ds_va,
+#     callbacks=[get_cb_ckpt(PATH_CKPT_FINETUNE), cb_earlystop, cb_lr],
+# )

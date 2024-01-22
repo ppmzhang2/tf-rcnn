@@ -40,16 +40,17 @@ cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
 )
 
 
-def train_rpn(epochs: int) -> None:
+def train_rpn(epochs: int, batch_size: int) -> None:
     """Train RPN.
 
     Args:
         epochs (int): number of epochs.
+        batch_size (int): batch size.
     """
     ds_tr, ds_va, _ = data.load_train_valid(
         cfg.DS,
-        cfg.BATCH_SIZE_TR,
-        cfg.BATCH_SIZE_TE,
+        batch_size,
+        32,  # TODO: customize
     )
     model = get_rpn_model()
     model.compile(optimizer=optimizer)

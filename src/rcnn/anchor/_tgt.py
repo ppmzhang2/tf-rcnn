@@ -234,7 +234,7 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
     """Get ground truth boxes based on IoU for each anchor for RPN training.
 
     Args:
-        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
+        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4) or (N_ac, 4)
         bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
 
     Returns:

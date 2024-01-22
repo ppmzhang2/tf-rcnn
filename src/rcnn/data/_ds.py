@@ -94,11 +94,11 @@ def rand_crop(
     return img_crop, bbx_clip
 
 
-def data_augmentation(
+def data_augment(
     img: tf.Tensor,
     bbx: tf.Tensor,
 ) -> tuple[tf.Tensor, tf.Tensor]:
-    """Apply data augmentation to the image and adjust bounding boxes.
+    """Apply at most one data augmentation to the image and bounding boxes.
 
     Args:
         img (tf.Tensor): Input image
@@ -106,25 +106,23 @@ def data_augmentation(
 
     Returns:
         tuple[tf.Tensor, tf.Tensor]: Augmented image and adjusted bounding
-        boxes
+        boxes.
     """
-    # Randomly choose a data augmentation technique
-    augmentation_choice = tf.random.uniform(
-        (),
-        minval=0,
-        maxval=3,
-        dtype=tf.int32,
-    )
+    # Proportion for each operation and idle
+    proportion = 0.25
 
-    if augmentation_choice == 0:
-        # Horizontal flip
+    # Random number for choosing the augmentation or idle
+    rand_aug = tf.random.uniform((), minval=0, maxval=1, dtype=tf.float32)
+
+    # Horizontal flip
+    if 0 <= rand_aug < 1 * proportion:
         img = tf.image.flip_left_right(img)
-        # Flip bounding boxes
         ymin, xmin, ymax, xmax = tf.unstack(bbx, axis=1)
         flipped_bbx = tf.stack([ymin, 1.0 - xmax, ymax, 1.0 - xmin], axis=1)
         bbx = flipped_bbx
-    elif augmentation_choice == 1:
-        # Gaussian noise
+
+    # Gaussian noise
+    elif 1 * proportion <= rand_aug < 2 * proportion:
         noise = tf.random.normal(
             shape=tf.shape(img),
             mean=0.0,
@@ -132,11 +130,12 @@ def data_augmentation(
             dtype=tf.float32,
         )
         img = img + noise
-    elif augmentation_choice == 2:  # noqa: PLR2004
-        # Random brightness
+
+    # Random brightness
+    elif 2 * proportion <= rand_aug < 3 * proportion:
         img = tf.image.random_brightness(img, max_delta=0.1)
 
-    # no need to clip the bounding boxes as we use normalized coordinates
+    # No operation is done in the range [3 * proportion, 1]
 
     return img, bbx
 
@@ -199,8 +198,8 @@ def preprcs_tr(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     img = resize(img, cfg.SIZE_RESIZE)
     # randomly crop the image and bounding boxes
     img, bbx = rand_crop(img, bbx, cfg.SIZE_IMG, cfg.SIZE_IMG)
-    # Data augmentation: Random horizontal flip
-    img, bbx = data_augmentation(img, bbx)
+    # randomly augment the image and bounding boxes
+    img, bbx = data_augment(img, bbx)
 
     # pad the labels and bounding boxes to a fixed size
     bbx = batch_pad(bbx, max_box=cfg.N_OBJ, value=0)
