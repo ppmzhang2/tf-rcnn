@@ -28,7 +28,7 @@ NMS_TH = 0.7  # nms threshold
 # dataset
 BUFFER_SIZE = 100
 BATCH_SIZE_TR = 8
-BATCH_SIZE_TE = 32
+BATCH_SIZE_TE = 8
 
 # RPN
 R_DROP = 0.2  # dropout rate
@@ -474,11 +474,13 @@ def get_rel_anchor(
 anchors_raw = get_rel_anchor(H, W, STRIDE, flat=True)
 
 # valid anchors mask based on image size of type np.float32 (N_ALL_AC,)
+BOUND_AC_LO = -0.2
+BOUND_AC_HI = 1.2
 MASK_RPNAC = np.where(
-    (anchors_raw[..., 0] >= 0) &  # y_min >= 0
-    (anchors_raw[..., 1] >= 0) &  # x_min >= 0
-    (anchors_raw[..., 2] <= 1) &  # y_max <= 1
-    (anchors_raw[..., 3] <= 1) &  # x_max <= 1
+    (anchors_raw[..., 0] >= BOUND_AC_LO) &  # y_min >= lo
+    (anchors_raw[..., 1] >= BOUND_AC_LO) &  # x_min >= lo
+    (anchors_raw[..., 2] <= BOUND_AC_HI) &  # y_max <= hi
+    (anchors_raw[..., 3] <= BOUND_AC_HI) &  # x_max <= hi
     (anchors_raw[..., 2] > anchors_raw[..., 0]) &  # y_max > y_min
     (anchors_raw[..., 3] > anchors_raw[..., 1]),  # x_max > x_min
     1.0,
@@ -1219,6 +1221,7 @@ def rpn(
             - deltas: (n_batch, N_VAL_AC, 4)
             - labels: (n_batch, N_VAL_AC, 1)
     """
+    # TBD: residual connections?
     layer_drop_entr = tf.keras.layers.Dropout(
         R_DROP,
         name="rpn_dropout_entr",
@@ -1510,12 +1513,12 @@ def risk_rpn(
     return tf.reduce_mean(loss_reg + loss_obj + loss_bkg)
 
 
-def mean_ap_rpn(
+def tf_label(
     bx_prd: tf.Tensor,
     bx_tgt: tf.Tensor,
     iou_th: float = 0.5,
 ) -> tf.Tensor:
-    """Compute the mAP for the RPN model for a batch of images.
+    """Compute the True/False labels based on IoU for a batch of images.
 
     Args:
         bx_prd (tf.Tensor): predicted boxes (B, N_prd, 4)
@@ -1527,17 +1530,27 @@ def mean_ap_rpn(
     """
     ious = iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
     iou_roi_max = tf.reduce_max(ious, axis=-1)  # (B, N_prd)
-    mask = tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)
-    tp = tf.reduce_sum(mask, axis=-1)  # (B,)
-    fp = tf.reduce_sum(1 - mask, axis=-1)  # (B,)
-    return tf.reduce_mean(tp / (tp + fp))
+    return tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)
+
+
+def recall_rpn(
+    bx_prd: tf.Tensor,
+    bx_tgt: tf.Tensor,
+    iou_th: float = 0.5,
+) -> tf.Tensor:
+    """Calculate recall for a batch of images."""
+    ious = iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
+    max_ious = tf.reduce_max(ious, axis=1)  # (B, N_prd)
+    tp = tf.reduce_sum(tf.cast(max_ious > iou_th, tf.float32), axis=1)  # (B,)
+    total_gt = tf.cast(tf.shape(bx_tgt)[1], tf.float32)  # N_tgt
+    return tf.reduce_mean(tp / (total_gt + EPS))
 
 
 # =============================================================================
 # SECTION: Training
 # =============================================================================
 
-LR_INIT = 0.002  # CANNOT be too large
+LR_INIT = 0.01  # CANNOT be too large
 LR_DECAY_FACTOR = 0.1  # Factor to reduce the learning rate
 STEP_SIZE = 4  # Decay the learning rate every 'step_size' epochs
 
@@ -1549,7 +1562,7 @@ class ModelRPN(tf.keras.Model):
         """Initialize the model."""
         super().__init__(*args, **kwargs)
         self.mean_loss = tf.keras.metrics.Mean(name="loss")
-        self.mean_ap = tf.keras.metrics.Mean(name="meanap")
+        self.mean_ap = tf.keras.metrics.AUC(name="meanap", curve="PR")
 
     def train_step(
         self,
@@ -1568,14 +1581,14 @@ class ModelRPN(tf.keras.Model):
             # In TF2, the `training` flag affects, during both training and
             # inference, behavior of layers such as normalization (e.g. BN)
             # and dropout.
-            dlt, log, bx_sup = self(x, training=True)
+            dlt_prd, log_prd, bbx_prd = self(x, training=True)
             # NOTE: cannot use broadcasting for performance
             bx_tgt = get_gt_box(ac_, bx_gt)
             # NOTE: cannot use broadcasting for performance
             dlt_tgt = bbox2delta(bx_tgt, ac_)
             mask_obj = get_gt_mask(bx_tgt, bkg=False)
             mask_bkg = get_gt_mask(bx_tgt, bkg=True)
-            loss = risk_rpn(dlt, dlt_tgt, log, mask_obj, mask_bkg)
+            loss = risk_rpn(dlt_prd, dlt_tgt, log_prd, mask_obj, mask_bkg)
 
         trainable_vars = self.trainable_variables
 
@@ -1596,7 +1609,8 @@ class ModelRPN(tf.keras.Model):
             ))
 
         self.mean_loss.update_state(loss)
-        self.mean_ap.update_state(mean_ap_rpn(bx_sup, bx_gt, iou_th=0.5))
+        label = tf_label(bbx_prd, bx_tgt, iou_th=0.5)
+        self.mean_ap.update_state(label, log_prd)
 
         return {
             "loss": self.mean_loss.result(),
@@ -1622,10 +1636,13 @@ class ModelRPN(tf.keras.Model):
         """Logic for one evaluation step."""
         x, (bx_gt, _) = data
 
-        _, _, bx_sup = self(x, training=False)
-        self.mean_ap.update_state(mean_ap_rpn(bx_sup, bx_gt, iou_th=0.5))
+        dlt_prd, log_prd, bbx_prd = self(x, training=False)
+        label = tf_label(bbx_prd, bx_gt, iou_th=0.5)
+        self.mean_ap.update_state(label, log_prd)
 
-        return {"meanap": self.mean_ap.result()}
+        return {
+            "meanap": self.mean_ap.result(),
+        }
 
 
 def get_rpn_model(
@@ -1644,7 +1661,6 @@ def get_rpn_model(
     # Add RPN layers on top of the backbone
     tmp_dlt, tmp_log, rpn_layers = rpn(vgg16.output, H_FM, W_FM)
     bbx = roi(tmp_dlt)
-    sup_box = suppress(bbx, tmp_log, N_SUPP_SCORE, N_SUPP_NMS, NMS_TH)
 
     # Freeze all layers in the backbone for training
     if freeze_backbone:
@@ -1658,7 +1674,7 @@ def get_rpn_model(
     # Create the ModelRPN instance
     model = ModelRPN(
         inputs=vgg16.input,
-        outputs=[tmp_dlt, tmp_log, sup_box],
+        outputs=[tmp_dlt, tmp_log, bbx],
     )
 
     return model
@@ -1696,11 +1712,11 @@ cb_earlystop = tf.keras.callbacks.EarlyStopping(
 cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
     monitor="val_meanap",
     mode="max",
-    factor=0.5,
+    factor=0.2,
     patience=2,
-    cooldown=4,
+    cooldown=6,
     min_lr=1e-8,
-    min_delta=0.0001,
+    min_delta=0.001,
     verbose=1,
 )
 

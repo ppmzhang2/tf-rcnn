@@ -15,7 +15,11 @@ seed_cnn_dlt = hash(seed_cnn_fm) % (2**32)
 seed_cnn_lbl = hash(seed_cnn_dlt) % (2**32)
 
 
-def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
+def rpn(
+    fm: tf.Tensor,
+    h_fm: int,
+    w_fm: int,
+) -> tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]:
     """Region Proposal Network (RPN).
 
     Args:
@@ -24,12 +28,17 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         w_fm (int): The width of the feature map.
 
     Returns:
-        tuple[tf.Tensor, tf.Tensor]: predicted deltas and labels.
+        tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]: predicted
+        deltas, labels, and the RPN layers for weight freezing.
             - deltas: (n_batch, N_VAL_AC, 4)
             - labels: (n_batch, N_VAL_AC, 1)
     """
-    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
-    fm = tf.keras.layers.Conv2D(
+    # TBD: residual connections?
+    layer_drop_entr = tf.keras.layers.Dropout(
+        cfg.R_DROP,
+        name="rpn_dropout_entr",
+    )  # entrance dropout
+    layer_conv_share = tf.keras.layers.Conv2D(
         cfg.SIZE_IMG,
         (3, 3),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_fm),
@@ -37,34 +46,49 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
         padding="same",
         activation=None,
         name="rpn_share",
-    )(fm)  # (n_batch, h_fm, w_fm, SIZE_IMG)
-    fm = tf.keras.layers.GroupNormalization()(fm)
-    fm = tf.keras.layers.Activation("relu")(fm)
-    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
+    )  # shared convolutional layer
+    layer_gn_share = tf.keras.layers.GroupNormalization()
+    layer_relu_share = tf.keras.layers.Activation("relu")
+    layer_drop_share = tf.keras.layers.Dropout(cfg.R_DROP)
 
-    # predicted deltas
-    dlt = tf.keras.layers.Conv2D(
+    # (n_batch, h_fm, w_fm, SIZE_IMG)
+    fm = layer_drop_entr(fm)
+    fm = layer_conv_share(fm)
+    fm = layer_gn_share(fm)
+    fm = layer_relu_share(fm)
+    fm = layer_drop_share(fm)
+
+    # deltas
+    layer_conv_dlt = tf.keras.layers.Conv2D(
         cfg.N_ANCHOR * 4,
         (1, 1),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_dlt),
         kernel_regularizer=reg_l2,
         activation=None,
         name="rpn_dlt",
-    )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
-    # TBD: Noralization or not?
-    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
+    )
+    layer_bn_dlt = tf.keras.layers.BatchNormalization()
+    layer_drop_dlt = tf.keras.layers.Dropout(cfg.R_DROP)
+    # (n_batch, h_fm, w_fm, N_ANCHOR * 4)
+    dlt = layer_conv_dlt(fm)
+    dlt = layer_bn_dlt(dlt)
+    dlt = layer_drop_dlt(dlt)
 
-    # predicted logits
-    log = tf.keras.layers.Conv2D(
+    # logits objectness score
+    layer_conv_log = tf.keras.layers.Conv2D(
         cfg.N_ANCHOR,
         (1, 1),
         kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_cnn_lbl),
         kernel_regularizer=reg_l2,
         activation=None,
         name="rpn_log",
-    )(fm)  # (n_batch, h_fm, w_fm, N_ANCHOR)
-    # TBD: Noralization or not?
-    fm = tf.keras.layers.Dropout(cfg.R_DROP)(fm)
+    )
+    layer_bn_log = tf.keras.layers.BatchNormalization()
+    layer_drop_log = tf.keras.layers.Dropout(cfg.R_DROP)
+    # (n_batch, h_fm, w_fm, N_ANCHOR)
+    log = layer_conv_log(fm)
+    log = layer_bn_log(log)
+    log = layer_drop_log(log)
 
     # flatten the tensors
     # shape: (B, H_FM * W_FM * N_ANCHOR, 4) and (B, H_FM * W_FM * N_ANCHOR, 1)
@@ -77,5 +101,20 @@ def rpn(fm: tf.Tensor, h_fm: int, w_fm: int) -> tf.Tensor:
     log_val = tf.boolean_mask(log_flat, MASK_AC == 1, axis=1)
 
     # for shape inference
-    return (tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
-            tf.reshape(log_val, (-1, N_VAL_AC, 1)))
+    return (
+        tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
+        tf.reshape(log_val, (-1, N_VAL_AC, 1)),
+        [
+            layer_drop_entr,
+            layer_conv_share,
+            layer_gn_share,
+            layer_relu_share,
+            layer_drop_share,
+            layer_conv_dlt,
+            layer_bn_dlt,
+            layer_drop_dlt,
+            layer_conv_log,
+            layer_bn_log,
+            layer_drop_log,
+        ],
+    )

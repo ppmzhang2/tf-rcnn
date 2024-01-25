@@ -108,12 +108,12 @@ def risk_rpn(
     return tf.reduce_mean(loss_reg + loss_obj + loss_bkg)
 
 
-def mean_ap_rpn(
+def tf_label(
     bx_prd: tf.Tensor,
     bx_tgt: tf.Tensor,
     iou_th: float = 0.5,
-) -> float:
-    """Compute the mAP for the RPN model for a batch of images.
+) -> tf.Tensor:
+    """Compute the True/False labels based on IoU for a batch of images.
 
     Args:
         bx_prd (tf.Tensor): predicted boxes (B, N_prd, 4)
@@ -125,7 +125,4 @@ def mean_ap_rpn(
     """
     ious = anchor.iou_batch(bx_prd, bx_tgt)  # (B, N_prd, N_tgt)
     iou_roi_max = tf.reduce_max(ious, axis=-1)  # (B, N_prd)
-    mask = tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)
-    tp = tf.reduce_sum(mask, axis=-1)  # (B,)
-    fp = tf.reduce_sum(1 - mask, axis=-1)  # (B,)
-    return tf.reduce_mean(tp / (tp + fp))
+    return tf.where(iou_roi_max > iou_th, 1.0, 0.0)  # (B, N_prd)

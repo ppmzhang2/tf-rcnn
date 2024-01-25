@@ -8,8 +8,9 @@ import tensorflow as tf
 from rcnn import cfg
 from rcnn import data
 from rcnn.model import get_rpn_model
+from rcnn.model import suppress
 
-RPN_CKPTS_PATH = os.path.join(cfg.MODELDIR, "rpn_ckpts")
+RPN_CKPTS_PATH = os.path.join(cfg.MODELDIR, "rpn", "ckpt")
 LOGGER = logging.getLogger(__name__)
 
 # optimizer = tf.keras.optimizers.Adam(
@@ -71,9 +72,10 @@ def predict_rpn(n_sample: int) -> None:
     ds_te, _ = data.load_test(cfg.DS, n_sample)
     # Predict
     img, (bx, lb) = next(iter(ds_te))
-    _, _, sup_box = model(img, training=False)  # (B, N_roi, 4)
+    _, log, bbx = model(img, training=False)  # (B, N_roi, 4)
+    bbx_sup = suppress(bbx, log, cfg.N_SUPP_SCORE, cfg.N_SUPP_NMS, cfg.NMS_TH)
     for i in range(n_sample):
-        pic = data.draw_rois(img[i], sup_box[i])
+        pic = data.draw_rois(img[i], bbx_sup[i])
         cv2.imwrite(
             os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_rpn_{i:04d}.jpg"),
             pic * cfg.IMGNET_STD + cfg.IMGNET_MEAN,
