@@ -28,9 +28,13 @@ cb_earlystop = tf.keras.callbacks.EarlyStopping(
 )
 cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
     monitor="val_meanap",
-    factor=0.5,
-    patience=3,
-    min_lr=0.0001,
+    mode="max",
+    factor=0.2,
+    patience=2,
+    cooldown=4,
+    min_lr=1e-8,
+    min_delta=0.001,
+    verbose=1,
 )
 
 
@@ -52,11 +56,8 @@ def train_rpn(epochs: int, batch_size: int) -> None:
         epochs (int): number of epochs.
         batch_size (int): batch size.
     """
-    ds_tr, ds_va, _ = data.load_train_valid(
-        cfg.DS,
-        batch_size,
-        16,  # TODO: customize
-    )
+    ds_tr, _ = data.load_train_voc2007(batch_size)
+    ds_va, _ = data.load_test_voc2007(16)  # TODO: customize
     model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
     model.compile(optimizer=optimizer)
     model.fit(
@@ -70,10 +71,10 @@ def train_rpn(epochs: int, batch_size: int) -> None:
 def predict_rpn(n_sample: int) -> None:
     """Predict RPN."""
     # Load model
-    model = get_rpn_model()
+    model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
     model.load_weights(PATH_CKPT_RPN)
     # Load dataset
-    ds_te, _ = data.load_test(cfg.DS, n_sample)
+    ds_te, _ = data.load_test_voc2007(n_sample)
     # Predict
     img, (bx, lb) = next(iter(ds_te))
     _, log, bbx = model(img, training=False)  # (B, N_roi, 4)
@@ -81,6 +82,6 @@ def predict_rpn(n_sample: int) -> None:
     for i in range(n_sample):
         pic = data.draw_rois(img[i], bbx_sup[i])
         cv2.imwrite(
-            os.path.join(cfg.DATADIR, f"{cfg.DS_PREFIX}_test_rpn_{i:04d}.jpg"),
+            os.path.join(cfg.DATADIR, f"voc2007_test_rpn_{i:04d}.jpg"),
             pic * cfg.IMGNET_STD + cfg.IMGNET_MEAN,
         )

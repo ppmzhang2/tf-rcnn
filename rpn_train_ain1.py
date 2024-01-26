@@ -7,7 +7,6 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 # training
-DS = "voc/2007"  # dataset name
 EPS = 1e-4
 
 # model
@@ -20,7 +19,7 @@ C = 3  # number of channels
 W_FM = W // STRIDE  # feature map width
 H_FM = H // STRIDE  # feature map height
 N_ANCHOR = 9  # number of anchors per grid cell
-MAX_BOX = 20
+N_OBJ = 20
 N_SUPP_SCORE = 300  # number of boxes to keep after score suppression
 N_SUPP_NMS = 10  # number of boxes to keep after nms
 NMS_TH = 0.7  # nms threshold
@@ -34,9 +33,9 @@ BATCH_SIZE_TE = 8
 R_DROP = 0.2  # dropout rate
 IOU_TH = 0.5  # IoU threshold for calculating mean Average Precision (mAP)
 IOU_SCALE = 10000  # scale for IoU for converting to int
-NEG_TH_ACGT = int(IOU_SCALE * 0.30)  # lower bound for anchor-GT highest IoU
-POS_TH_ACGT = int(IOU_SCALE * 0.70)  # upper bound for anchor-GT highest IoU
-NEG_TH_GTAC = int(IOU_SCALE * 0.01)  # lower bound for GT-anchor highest IoU
+NEG_TH_ACGT = int(IOU_SCALE * 0.30)  # lower bound of AC-GT highest IoU
+POS_TH_ACGT = int(IOU_SCALE * 0.50)  # upper bound of AC-GT highest IoU (best)
+NEG_TH_GTAC = int(IOU_SCALE * 0.01)  # lower bound of GT-AC highest IoU
 NUM_POS_RPN = 128  # number of positive anchors
 NUM_NEG_RPN = 128  # number of negative anchors
 
@@ -203,14 +202,14 @@ def data_augment(
         noise = tf.random.normal(
             shape=tf.shape(img),
             mean=0.0,
-            stddev=0.02,
+            stddev=0.5,
             dtype=tf.float32,
         )
         img = img + noise
 
     # Random brightness
     elif 2 * proportion <= rand_aug < 3 * proportion:
-        img = tf.image.random_brightness(img, max_delta=0.1)
+        img = tf.image.random_brightness(img, max_delta=2.0)
 
     # No operation is done in the range [3 * proportion, 1]
 
@@ -253,49 +252,111 @@ def preprcs_tr(sample: dict) -> tuple[tf.Tensor, tuple[tf.Tensor]]:
     img, bbx = data_augment(img, bbx)
 
     # pad the labels and bounding boxes to a fixed size
-    bbx = batch_pad(bbx, max_box=MAX_BOX, value=0)
-    lab = batch_pad(lab[:, tf.newaxis], max_box=MAX_BOX, value=-1)
+    bbx = batch_pad(bbx, max_box=N_OBJ, value=0)
+    lab = batch_pad(lab[:, tf.newaxis], max_box=N_OBJ, value=-1)
 
     return img, (bbx, lab)
 
 
-def load_train_valid(
-    name: str,
-    n_tr: int,
-    n_te: int,
-) -> tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
-    """Loads the training and validation datasets.
+def preprcs_te(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Preprocess test dataset samples.
+
+    Args:
+        sample (dict): sample from the dataset
+        e.g. {
+            "image": tf.Tensor,
+            "objects": {
+                "bbox": tf.Tensor,
+                "label": tf.Tensor,
+            },
+        }
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor, tf.Tensor]: images, bounding boxes, and
+            labels
+            - images: [batch_size, H, W, 3]
+            - bounding boxes: [batch_size, max_box, 4] in relative coordinates
+            - labels: [batch_size, max_box, 1]
+
+    TODO: predict with full-sized images
+    """
+    img = sample["image"]
+    # Normalize the image with ImageNet mean and std
+    img = (tf.cast(img, dtype=tf.float32) - IMGNET_MEAN) / IMGNET_STD
+
+    # Get the bounding boxes and labels
+    bbx = sample["objects"]["bbox"]
+    lbl = sample["objects"]["label"]
+
+    # resize the image and bounding boxes while preserving the aspect ratio
+    img = resize(img, SIZE_RESIZE)
+    # randomly crop the image and bounding boxes
+    img, bbx = rand_crop(img, bbx, SIZE_IMG, SIZE_IMG)
+
+    # pad the labels and bounding boxes to a fixed size
+    bbx = batch_pad(bbx, max_box=N_OBJ, value=0)
+    lbl = batch_pad(lbl[:, tf.newaxis], max_box=N_OBJ, value=-1)
+
+    return img, (bbx, lbl)
+
+
+def load_train_voc2007(
+        n: int) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the training dataset of Pascal VOC 2007.
 
     Args:
         name (str): name of the dataset
-        n_tr (int): number of training samples
-        n_te (int): number of testing samples
+        n (int): number of training samples per batch
 
     Returns:
-        tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
-            training and validation datasets, and dataset info.
+        tuple[tf.data.Dataset, tfds.core.DatasetInfo]: training datasets and
+        dataset info.
 
     The training and validation datasets are shuffled and preprocessed with
-    `preprocess`:
+    `ds_handler`:
         - images: [batch_size, H, W, 3]
         - bounding boxes: [batch_size, max_box, 4] in relative
         - labels: [batch_size, max_box, 1]
     """
-    (ds_tr, ds_va), ds_info = tfds.load(
-        name,
-        split=["train", "validation"],
+    ds, ds_info = tfds.load(
+        "voc/2007",
+        split="train",
         shuffle_files=True,
         with_info=True,
     )
-    ds_tr = ds_tr.map(
+    ds = ds.map(
         preprcs_tr,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).shuffle(BUFFER_SIZE).batch(n_tr).prefetch(tf.data.experimental.AUTOTUNE)
-    ds_va = ds_va.map(
-        preprcs_tr,
+    ).shuffle(BUFFER_SIZE).batch(n).prefetch(tf.data.experimental.AUTOTUNE)
+    return ds, ds_info
+
+
+def load_test_voc2007(n: int) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the testing dataset of Pascal VOC 2007.
+
+    Args:
+        n (int): number of testing samples per batch
+
+    Returns:
+        tuple[tf.data.Dataset, tfds.core.DatasetInfo]: testing dataset and
+            dataset info.
+
+    The testing dataset is preprocessed with `ds_handler`:
+        - images: [batch_size, H, W, 3]
+        - bounding boxes: [batch_size, max_box, 4] in relative
+        - labels: [batch_size, max_box, 1]
+    """
+    ds_te, ds_info = tfds.load(
+        "voc/2007",
+        split="validation",
+        shuffle_files=False,
+        with_info=True,
+    )
+    ds_te = ds_te.map(
+        preprcs_te,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).shuffle(BUFFER_SIZE).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
-    return ds_tr, ds_va, ds_info
+    ).batch(n).prefetch(tf.data.experimental.AUTOTUNE)
+    return ds_te, ds_info
 
 
 # =============================================================================
@@ -707,6 +768,7 @@ def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     return iou(bbox_prd_, bbox_lbl_)
 
 
+# TODO: GIoU
 def iou_batch(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     """Calculate IoU matrix for each batch of two sets of bounding boxes.
 
@@ -973,9 +1035,17 @@ def get_gt_gtac(
     idx: tf.Tensor,
     ious: tf.Tensor,
 ) -> tf.Tensor:
-    """Get GT boxes based on GT's best AC (GT-AC) Match above threshold.
+    """Get target boxes for each anchor based on GT's best AC Match (GT-AC).
 
-    - get positions `coord_gt` of GT boxes with IoU higher than `POS_TH_ACGT`;
+    Things are a bit different here compared to the AC-GT case:
+
+    - for AC-GT, some anchors are truly representing background, therefore that
+      low IoU means background makes sense
+    - for GT-AC, however, all anchors are representing ground truth boxes,
+      therefore only VERY low IoU should be ignored, otherwise they are all
+      foreground.
+
+    - get positions `coord_gt` of GT boxes with IoU higher than `NEG_TH_GTAC`;
       (using `flag_gtac` is also fine)
     - corresponding anchor positions `coord_ac` will also be selected
     - remove duplicates **anchors** (by batch index and anchor index) and keep
@@ -1046,14 +1116,19 @@ def get_gt_acgt(
     idx: tf.Tensor,
     ious: tf.Tensor,
 ) -> tf.Tensor:
-    """Get GT boxes based on AC's best GT Match (AC-GT) above threshold.
+    """Get target boxes for each anchor based on AC's best GT Match (AC-GT).
 
-    - detect background
-      - anchors with IoU lower than `NEG_TH_ACGT` will be set to -1.0
-    - detect AC-GT foreground
-      - get positions `coord_ac` of anchors with IoU higher than `POS_TH_ACGT`
-      - corresponding GT boxes will be selected as well
-      - update target boxes `bx_tgt_acgt` on `pos` with selected GT boxes
+    There are three types of "target boxes":
+
+    - background: AC-GT IoU < `NEG_TH_ACGT`; represented by all -1.0
+    - foreground:
+      - i.e. ground truth boxes
+      - should be the best matched GT boxes for each anchor
+      - but we are using the AC-GT IoU here, which is a bit awkward:
+        - get coordinates (BATCH_INDEX, ANCHOR_INDEX) of anchors with the AC-GT
+          IoU higher than `POS_TH_ACGT`
+        - get corresponding GT box coordinates (BATCH_INDEX, GT_INDEX)
+    - ignore: AC-GT IoU in [NEG_TH_ACGT, POS_TH_ACGT); represented by all 0.0
 
     Args:
         bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
@@ -1075,27 +1150,39 @@ def get_gt_acgt(
 
     # initialize with zeros
     bx_tgt_acgt = tf.zeros_like(bx_ac, dtype=tf.float32)  # (B, N_ac, 4)
-    # detect background
+
+    # -------------------------------------------------------------------------
+    # 1. detect background
+    # -------------------------------------------------------------------------
+
     bx_tgt_acgt = tf.where(
         tf.repeat(ious[..., tf.newaxis], 4, axis=-1) < NEG_TH_ACGT,
         tf.constant([[-1.0]]),
         bx_tgt_acgt,
     )  # (N_ac, 4)
 
-    # T/F matrix (B, N_ac) indicating whether the best IoU of each anchor is
-    # above threshold
+    # -------------------------------------------------------------------------
+    # 2. detect AC-GT foreground
+    # -------------------------------------------------------------------------
+
+    # 2.1. identify foreground anchors
+    #   - T/F matrix (B, N_ac) indicating whether the best IoU of each anchor
+    #     is above threshold
     flag_acgt = ious > POS_TH_ACGT
-    # coordinate pairs (M, 2) of anchors where `M <= B*N_ac`
-    # of format (batch index, AC index), indicating the best matched anchors
-    # no duplicates as `tf.where` here returns indices of non-zero elements,
-    # which are unique
+    #   - coordinate pairs (M, 2) of anchors where `M <= B*N_ac` of format
+    #     (batch index, AC index), indicating the best matched anchors
+    #   - no duplicates as `tf.where` here returns indices of non-zero
+    #     elements, which are unique
     coord_ac = tf.cast(tf.where(flag_acgt), tf.int32)
-    # vector of best matched GT boxes' indices (M,) where value in [0, N_gt)
-    # may have duplicates as one anchor may have multiple matches with GT boxes
+    # 2.2. For each anchor considered as foreground, finds the ground truth
+    #      box that has the highest IoU with that anchor.
+    #   - vector of best matched GT boxes' indices (M,) where value in
+    #     [0, N_gt)
+    #   - may have duplicates
     values = tf.gather_nd(idx, coord_ac)
-    # coordinate pairs (M, 2) of GT boxes where `M <= B*N_ac` of format
-    # (batch index, GT index), indicating the best matched GT boxes
-    # may have duplicates as `values` may have duplicates
+    #   - coordinate pairs (M, 2) of GT boxes where `M <= B*N_ac` of format
+    #     (batch index, GT index), indicating the best matched GT boxes
+    #   - may have duplicates as `values` may have duplicates
     coord_gt = tf.stack([coord_ac[:, 0], values], axis=-1)
 
     # no need to filter as we only concern about the duplicates in `coord_ac`,
@@ -1134,58 +1221,22 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
 # SECTION: models
 # =============================================================================
 
-# Buffer to clip the RoIs. Defaults to 1e-1.
-BUFFER = 1e-1
 
-
-def roi(dlt: tf.Tensor) -> tf.Tensor:
+def roi(dlt: tf.Tensor, buffer: float = 1e-1) -> tf.Tensor:
     """Get RoI bounding boxes from anchor deltas.
 
     Args:
         dlt (tf.Tensor): RPN predicted deltas. Shape [B, N_VAL_AC, 4].
+        buffer (float, optional): buffer to clip the RoIs. Defaults to 1e-1.
 
     Returns:
-        tuple[tf.Tensor, tf.Tensor, tf.Tensor]: RPN classification, bounding
-            box delta, and RoIs. All are filtered by valid anchor masks.
-            Shape [B, N_VAL_AC, 1], [B, N_VAL_AC, 4], and [B, N_VAL_AC, 4].
+        tf.Tensor: clipped RoIs in shape [B, N_VAL_AC, 4].
     """
     bsize = tf.shape(dlt)[0]
     # Computing YXYX RoIs from deltas. output shape: (B, N_VAL_AC, 4)
     rois = delta2bbox(tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0), dlt)
     # clip the RoIs
-    rois = tf.clip_by_value(rois, -BUFFER, 1. + BUFFER)  # (B, N_VAL_AC, 4)
-
-    return rois
-
-
-def get_abs_roi(fm: tf.Tensor, rois: tf.Tensor) -> tf.Tensor:
-    """Get absolute RoIs."""
-    h_fm, w_fm = tf.shape(fm)[1], tf.shape(fm)[2]
-    return tf.stack(
-        [
-            rois[..., 0] * tf.cast(h_fm, tf.float32),
-            rois[..., 1] * tf.cast(w_fm, tf.float32),
-            rois[..., 2] * tf.cast(h_fm, tf.float32),
-            rois[..., 3] * tf.cast(w_fm, tf.float32),
-        ],
-        axis=-1,
-    )
-
-
-def get_idx(rois: tf.Tensor) -> tf.Tensor:
-    """Get indices for RoI alignment.
-
-    Args:
-        rois (tf.Tensor): RoIs, (bsize, n_roi, 4)
-
-    Returns:
-        tf.Tensor: (bsize, n_roi, 2) tensor of indices (batch_idx, roi_idx)
-    """
-    batch_size, num_rois, _ = tf.shape(rois)
-    return tf.stack(
-        tf.meshgrid(tf.range(batch_size), tf.range(num_rois), indexing="ij"),
-        axis=-1,
-    )
+    return tf.clip_by_value(rois, -buffer, 1. + buffer)  # (B, N_VAL_AC, 4)
 
 
 # -----------------------------------------------------------------------------
@@ -1651,20 +1702,20 @@ def get_rpn_model(
     freeze_rpn: bool = False,
 ) -> ModelRPN:
     """Create a RPN model for training or prediction."""
-    # VGG16 Backbone
-    vgg16 = tf.keras.applications.vgg16.VGG16(
+    # Backbone
+    bb = tf.keras.applications.resnet50.ResNet50(
         weights="imagenet",
         include_top=False,
         input_shape=(H, W, 3),
     )
 
     # Add RPN layers on top of the backbone
-    tmp_dlt, tmp_log, rpn_layers = rpn(vgg16.output, H_FM, W_FM)
+    tmp_dlt, tmp_log, rpn_layers = rpn(bb.output, H_FM, W_FM)
     bbx = roi(tmp_dlt)
 
     # Freeze all layers in the backbone for training
     if freeze_backbone:
-        for layer in vgg16.layers:
+        for layer in bb.layers:
             layer.trainable = False
     # Freeze all layers in the RPN for training
     if freeze_rpn:
@@ -1673,7 +1724,7 @@ def get_rpn_model(
 
     # Create the ModelRPN instance
     model = ModelRPN(
-        inputs=vgg16.input,
+        inputs=bb.input,
         outputs=[tmp_dlt, tmp_log, bbx],
     )
 
@@ -1714,7 +1765,7 @@ cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
     mode="max",
     factor=0.2,
     patience=2,
-    cooldown=6,
+    cooldown=4,
     min_lr=1e-8,
     min_delta=0.001,
     verbose=1,
@@ -1730,7 +1781,8 @@ cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
 # SGD Optimizer with Momentum
 optimizer = tf.keras.optimizers.SGD(learning_rate=LR_INIT, momentum=0.9)
 
-ds_tr, ds_va, _ = load_train_valid(DS, BATCH_SIZE_TR, BATCH_SIZE_TE)
+ds_tr, _ = load_train_voc2007(BATCH_SIZE_TR)
+ds_va, _ = load_test_voc2007(BATCH_SIZE_TE)
 
 # training
 model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)

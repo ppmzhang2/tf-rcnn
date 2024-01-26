@@ -14,13 +14,10 @@ def train_rpn(epochs: int, batch_size: int) -> None:
 
 
 @click.command()
-@click.option("--images",
-              type=click.INT,
-              default=10,
-              help="number of images to add bounding boxes to.")
-def predict_rpn(images: int) -> None:
+@click.option("--n", type=click.INT, default=10, help="#images to show")
+def predict_rpn(n: int) -> None:
     """Predict with the RPN."""
-    return trainer.predict_rpn(images)
+    return trainer.predict_rpn(n)
 
 
 @click.command()
@@ -28,3 +25,10 @@ def predict_rpn(images: int) -> None:
 def show_gt(n: int) -> None:
     """Show GT."""
     return vis.show_gt(n)
+
+
+@click.command()
+@click.option("--n", type=click.INT, default=10, help="#images to show")
+def show_tr(n: int) -> None:
+    """Show Training Data."""
+    return vis.show_tr(n)
