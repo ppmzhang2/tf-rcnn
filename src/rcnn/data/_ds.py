@@ -126,14 +126,14 @@ def data_augment(
         noise = tf.random.normal(
             shape=tf.shape(img),
             mean=0.0,
-            stddev=0.02,
+            stddev=0.5,
             dtype=tf.float32,
         )
         img = img + noise
 
     # Random brightness
     elif 2 * proportion <= rand_aug < 3 * proportion:
-        img = tf.image.random_brightness(img, max_delta=0.1)
+        img = tf.image.random_brightness(img, max_delta=2.0)
 
     # No operation is done in the range [3 * proportion, 1]
 
@@ -250,21 +250,17 @@ def preprcs_te(sample: dict) -> tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     return img, (bbx, lbl)
 
 
-def load_train_valid(
-    name: str,
-    n_tr: int,
-    n_te: int,
-) -> tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
-    """Loads the training and validation datasets.
+def load_train_voc2007(
+        n: int) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the training dataset of Pascal VOC 2007.
 
     Args:
         name (str): name of the dataset
-        n_tr (int): number of training samples
-        n_te (int): number of testing samples
+        n (int): number of training samples per batch
 
     Returns:
-        tuple[tf.data.Dataset, tf.data.Dataset, tfds.core.DatasetInfo]:
-            training and validation datasets, and dataset info.
+        tuple[tf.data.Dataset, tfds.core.DatasetInfo]: training datasets and
+        dataset info.
 
     The training and validation datasets are shuffled and preprocessed with
     `ds_handler`:
@@ -272,34 +268,24 @@ def load_train_valid(
         - bounding boxes: [batch_size, max_box, 4] in relative
         - labels: [batch_size, max_box, 1]
     """
-    (ds_tr, ds_va), ds_info = tfds.load(
-        name,
-        split=["train", "validation"],
+    ds, ds_info = tfds.load(
+        "voc/2007",
+        split="train",
         shuffle_files=True,
         with_info=True,
     )
-    ds_tr = ds_tr.map(
+    ds = ds.map(
         preprcs_tr,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).shuffle(cfg.BUFFER_SIZE).batch(n_tr).prefetch(
-        tf.data.experimental.AUTOTUNE)
-    ds_va = ds_va.map(
-        preprcs_tr,
-        num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).shuffle(cfg.BUFFER_SIZE).batch(n_te).prefetch(
-        tf.data.experimental.AUTOTUNE)
-    return ds_tr, ds_va, ds_info
+    ).shuffle(cfg.BUFFER_SIZE).batch(n).prefetch(tf.data.experimental.AUTOTUNE)
+    return ds, ds_info
 
 
-def load_test(
-    name: str,
-    n_te: int,
-) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
-    """Loads the testing dataset.
+def load_test_voc2007(n: int) -> tuple[tf.data.Dataset, tfds.core.DatasetInfo]:
+    """Loads the testing dataset of Pascal VOC 2007.
 
     Args:
-        name (str): name of the dataset
-        n_te (int): number of testing samples
+        n (int): number of testing samples per batch
 
     Returns:
         tuple[tf.data.Dataset, tfds.core.DatasetInfo]: testing dataset and
@@ -311,7 +297,7 @@ def load_test(
         - labels: [batch_size, max_box, 1]
     """
     ds_te, ds_info = tfds.load(
-        name,
+        "voc/2007",
         split="validation",
         shuffle_files=False,
         with_info=True,
@@ -319,5 +305,5 @@ def load_test(
     ds_te = ds_te.map(
         preprcs_te,
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
-    ).batch(n_te).prefetch(tf.data.experimental.AUTOTUNE)
+    ).batch(n).prefetch(tf.data.experimental.AUTOTUNE)
     return ds_te, ds_info

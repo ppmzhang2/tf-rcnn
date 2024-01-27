@@ -12,3 +12,4 @@ def cli() -> None:
 cli.add_command(rpn_cli.train_rpn)
 cli.add_command(rpn_cli.predict_rpn)
 cli.add_command(rpn_cli.show_gt)
+cli.add_command(rpn_cli.show_tr)

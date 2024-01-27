@@ -53,10 +53,8 @@ class Config:
     MODELDIR = os.path.join(rootdir, "model_weights")  # save trained weights
 
     # training
-    LR_INIT = 0.001  # Start with this learning rate
+    LR_INIT = 0.01  # Start with this learning rate
     R_DROP = 0.2  # dropout rate
-    DS = "voc/2007"  # dataset name
-    DS_PREFIX = "voc_2007"  # prefix for file names
     EPS = 1e-4
 
     # -------------------------------------------------------------------------

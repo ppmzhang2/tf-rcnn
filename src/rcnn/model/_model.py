@@ -4,7 +4,6 @@ import tensorflow as tf
 from rcnn import anchor
 from rcnn import cfg
 from rcnn import risk
-from rcnn.model._base import get_vgg16
 from rcnn.model._roi import AC_VAL
 from rcnn.model._roi import roi
 from rcnn.model._rpn import rpn
@@ -104,29 +103,26 @@ class ModelRPN(tf.keras.Model):
         }
 
 
-vgg16 = get_vgg16(cfg.H, cfg.W)
-
-
 def get_rpn_model(
     *,
     freeze_backbone: bool = False,
     freeze_rpn: bool = False,
 ) -> ModelRPN:
     """Create a RPN model for training or prediction."""
-    # VGG16 Backbone
-    vgg16 = tf.keras.applications.vgg16.VGG16(
+    # Backbone
+    bb = tf.keras.applications.resnet50.ResNet50(
         weights="imagenet",
         include_top=False,
         input_shape=(cfg.H, cfg.W, 3),
     )
 
     # Add RPN layers on top of the backbone
-    tmp_dlt, tmp_log, rpn_layers = rpn(vgg16.output, cfg.H_FM, cfg.W_FM)
+    tmp_dlt, tmp_log, rpn_layers = rpn(bb.output, cfg.H_FM, cfg.W_FM)
     bbx = roi(tmp_dlt)
 
     # Freeze all layers in the backbone for training
     if freeze_backbone:
-        for layer in vgg16.layers:
+        for layer in bb.layers:
             layer.trainable = False
     # Freeze all layers in the RPN for training
     if freeze_rpn:
@@ -135,7 +131,7 @@ def get_rpn_model(
 
     # Create the ModelRPN instance
     model = ModelRPN(
-        inputs=vgg16.input,
+        inputs=bb.input,
         outputs=[tmp_dlt, tmp_log, bbx],
     )
 
