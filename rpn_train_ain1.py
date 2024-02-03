@@ -1,5 +1,7 @@
 """all-in-one script for training the RPN model of Mask R-CNN."""
 
+import os
+import random
 from typing import Union
 
 import numpy as np
@@ -33,9 +35,9 @@ BATCH_SIZE_TE = 8
 R_DROP = 0.2  # dropout rate
 IOU_TH = 0.5  # IoU threshold for calculating mean Average Precision (mAP)
 IOU_SCALE = 10000  # scale for IoU for converting to int
-NEG_TH_ACGT = int(IOU_SCALE * 0.30)  # lower bound of AC-GT highest IoU
-POS_TH_ACGT = int(IOU_SCALE * 0.50)  # upper bound of AC-GT highest IoU (best)
-NEG_TH_GTAC = int(IOU_SCALE * 0.01)  # lower bound of GT-AC highest IoU
+NEG_TH_ACGT = int(IOU_SCALE * 0.30)
+POS_TH_ACGT = int(IOU_SCALE * 0.50)  # tuned for VOC 2007
+POS_TH_GTAC = int(IOU_SCALE * 0.01)
 NUM_POS_RPN = 128  # number of positive anchors
 NUM_NEG_RPN = 128  # number of negative anchors
 
@@ -51,6 +53,30 @@ IMGNET_STD = np.array([58.393, 57.12, 57.375], dtype=np.float32)
 IMGNET_MEAN = np.array([123.68, 116.78, 103.94], dtype=np.float32)
 
 TensorT = Union[tf.Tensor, np.ndarray]  # noqa: UP007
+
+
+# TODO: use operation-level seed
+def set_global_determinism(seed: int) -> None:
+    """Set global determinism.
+
+    Args:
+        seed (int): random seed
+    """
+    # ---------- set the global random seed ----------
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    tf.random.set_seed(seed)
+    np.random.seed(seed)
+
+    # ---------- set the global graph-level seed ----------
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+
+
+# Call the above function with seed value
+set_global_determinism(seed=100)
 
 # =============================================================================
 # SECTION: dataset
@@ -978,31 +1004,85 @@ def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
     return tf.cast(rand < th, tf.float32) * mask
 
 
-def get_gt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
-    """Get target mask for each anchor based on target boxes for RPN training.
+def get_tgt_acgt(
+    bx_ac: tf.Tensor,
+    bx_gt: tf.Tensor,
+    idx: tf.Tensor,
+    ious: tf.Tensor,
+) -> tf.Tensor:
+    """Get target boxes for each anchor based on AC's best GT Match (AC-GT).
+
+    There are three types of "target boxes":
+
+    - background: AC-GT IoU < `NEG_TH_ACGT`; represented by all -1.0
+    - foreground:
+      - i.e. ground truth boxes
+      - should be the best matched GT boxes for each anchor
+      - but we are using the AC-GT IoU here, which is a bit awkward:
+        - get `M` coordinates of anchors with the AC-GT IoU higher than the
+          positive threshold `POS_TH_ACGT`
+          - format: (BATCH_INDEX, ANCHOR_INDEX) 
+          - shape: (M, 2) where `M <= B*N_ac`
+        - get corresponding GTs of shape (M, 4)
+        - update the target boxes, at the anchor coordinates, with
+          corresponding GTs
+    - ignore: AC-GT IoU in [NEG_TH_ACGT, POS_TH_ACGT); represented by all 0.0
 
     Args:
-        bx_tgt (tf.Tensor): target ground truth boxes (B, N_ac, 4)
-        bkg (bool, optional): whether to indicate background. Defaults False.
+        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
+        bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
+        idx (tf.Tensor): pre-computed indices matrix (B, N_ac) where
+            value in [0, N_gt), representing indices of the best mached GT box
+            for each anchor
+        ious (tf.Tensor): pre-computed IoU matrix (B, N_ac) where value in
+            [0, 10000], representing the best IoU for each anchor
 
     Returns:
-        tf.Tensor: 0/1 mask for each box (B, N_ac) for each anchor
+        tf.Tensor: GT boxes (B, N_ac, 4) for each anchor of tf.float32
+          - [-1.0, -1.0, -1.0, -1.0]: background
+          - [0.0, 0.0, 0.0, 0.0]: ignore
+          - otherwise: foreground
     """
-    # 0. coordinate sum of target boxes (B, N_ac):
-    #    - positive: foreground
-    #    - -4.0: background
-    #    - 0.0: ignore
-    _coor_sum = tf.reduce_sum(bx_tgt, axis=-1)
-    # init with tf.float32 zeros
-    mask = tf.zeros_like(_coor_sum, dtype=tf.float32)  # (B, N_ac)
-    if bkg:
-        mask = tf.where(_coor_sum < 0, 1.0, mask)
-        return sample_mask(mask, NUM_NEG_RPN)
-    mask = tf.where(_coor_sum > 0, 1.0, mask)
-    return sample_mask(mask, NUM_POS_RPN)
+    # initialize with zeros
+    bx_tgt_acgt = tf.zeros_like(bx_ac, dtype=tf.float32)  # (B, N_ac, 4)
+
+    # 1. ---------- detect background ----------
+
+    bx_tgt_acgt = tf.where(
+        tf.repeat(ious[..., tf.newaxis], 4, axis=-1) < NEG_TH_ACGT,
+        tf.constant([[-1.0]]),
+        bx_tgt_acgt,
+    )  # (N_ac, 4)
+
+    # 2. ---------- detect AC-GT foreground ----------
+
+    # 2.1. identify foreground anchors
+    #   - T/F matrix (B, N_ac) indicating whether the best IoU of each anchor
+    #     is above threshold
+    flag_acgt = ious > POS_TH_ACGT
+    #   - foreground anchor coordinates (M, 2) of format
+    #     (batch index, AC index) where `M <= B*N_ac`
+    #   - no duplicate
+    coord_ac = tf.cast(tf.where(flag_acgt), tf.int32)
+    # 2.2. For each foreground anchor considered, find its best matched GT box
+    #      i.e. the GT box with the highest AC-GT IoU
+    #   - vector of best matched GTs' indices (M,) where value in [0, N_gt)
+    #   - may have duplicates
+    values = tf.gather_nd(idx, coord_ac)
+    #   - best matched GT coordinates (M, 2) of of format
+    #     (batch index, GT index)
+    #   - may have duplicates as `ind_gt` may have duplicates
+    coord_gt = tf.stack([coord_ac[:, 0], values], axis=-1)
+
+    # no deduplication needed here as `coord_ac` is unique
+    return tf.tensor_scatter_nd_update(
+        bx_tgt_acgt,  # (B, N_ac, 4)
+        coord_ac,  # (M, 2)
+        tf.gather_nd(bx_gt, coord_gt),  # (M, 4)
+    )  # (B, N_ac, 4)
 
 
-def filter_on_max(x: tf.Tensor) -> tf.Tensor:
+def mask_max(x: tf.Tensor) -> tf.Tensor:
     """Filter rows based on the maximum value in the second column.
 
     Given a 2D tensor, the function filters the rows based on the following
@@ -1029,7 +1109,7 @@ def filter_on_max(x: tf.Tensor) -> tf.Tensor:
     return tf.reduce_any(x[:, 1][:, tf.newaxis] == max_indices, axis=-1)
 
 
-def get_gt_gtac(
+def get_tgt_gtac(
     bx_ac: tf.Tensor,
     bx_gt: tf.Tensor,
     idx: tf.Tensor,
@@ -1042,15 +1122,35 @@ def get_gt_gtac(
     - for AC-GT, some anchors are truly representing background, therefore that
       low IoU means background makes sense
     - for GT-AC, however, all anchors are representing ground truth boxes,
-      therefore only VERY low IoU should be ignored, otherwise they are all
-      foreground.
+      therefore:
+      - only VERY low IoU should be ignored (meaning they successfully evade
+        ALL anchors, which is unlikely).
+      - otherwise they are all foreground.
 
-    - get positions `coord_gt` of GT boxes with IoU higher than `NEG_TH_GTAC`;
-      (using `flag_gtac` is also fine)
-    - corresponding anchor positions `coord_ac` will also be selected
-    - remove duplicates **anchors** (by batch index and anchor index) and keep
-      the one with the highest IoU
-    - update target boxes with selected GT boxes, and keep the rest as -1.0
+    Reason for Deduplication:
+
+    - The final output should of shape (B, N_ac, 4), suitable for comparison
+      with the anchors; its content should be foreground GTs or ignoring masks
+      (0.0).
+    - Yet for one anchor, i.e. at one position of (B, N_ac), there may be
+      multiple GTs, which is not allowed.
+
+    How to identify foreground:
+
+    - Finding the foreground GTs is easy: simply thresholding the GT-AC IoUs
+    - Yet they need to be placed at the correct AC positions, which requires:
+      - finding for each GT box its best matched anchor
+      - in case of multiple GT boxes matching to the same anchor, keeping the
+        one with the highest IoU
+    - Procedure:
+      - get foreground GTs in shape (M, 4)
+      - get their best matched anchor coordinates (M, 2) of format
+        (batch index, anchor index)
+      - get, for deduplication, mask of shape (M,) indicating `M1` GTs to keep
+        where `M1 <= M`
+      - via the mask, get deduplicated GTs (M1, 4) and their corresponding
+        anchor coordinates (M1, 2)
+      - update target boxes with deduped GT foreground boxes
 
     Args:
         bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
@@ -1063,32 +1163,33 @@ def get_gt_gtac(
 
     Returns:
         tf.Tensor: best IoU matched GT boxes (B, N_ac, 4) for anchors
-          - [-1.0, -1.0, -1.0, -1.0]: background
+          - [0.0, 0.0, 0.0, 0.0]: ignored
           - positive: foreground
     """
-    # T/F matrix (B, N_gt) indicating whether the best IoU of each GT box is
-    # above threshold
-    flag_gtac = ious > NEG_TH_GTAC  # (B, N_gt)
-    # coordinate pairs (M, 2) of ground truth boxes where `M <= B*N_gt`
-    # of format (batch index, GT index), indicating the best matched GT boxes
-    # no duplicates as `tf.where` here returns indices of non-zero elements,
-    # which are unique
+    # 1. ---------- identify foreground GTs ----------
+
+    # 1.1. get foreground GT coordinates
+    #   - T/F matrix (B, N_gt) indicating whether the best IoU of each GT box
+    #     is above threshold
+    flag_gtac = ious > POS_TH_GTAC  # (B, N_gt)
+    #   - GT coordinates (M, 2) of format (batch index, GT index) where
+    #     `M <= B*N_gt`
+    #   - coordinates are unique
     coord_gt = tf.cast(tf.where(flag_gtac), tf.int32)
-    # vector of best matched anchors' indices (M,) where value in [0, N_ac)
-    # may have duplicates as multiple GT boxes may have the same best matched
-    # anchor
+    # 1.2. get corresponding anchor coordinates
+    #   - vector of `M` anchor indices, best matched anchors for the `M`
+    #     foreground GTs
+    #   - have duplicates
     idx_ac = tf.gather_nd(idx, coord_gt)
-    # coordinate pairs (M, 2) of anchors where `M <= B*N_gt` of format
-    # (batch index, anchor index), indicating the best matched anchor
-    # may have duplicates as `idx_ac` may have duplicates
+    #   - anchor coordinates (M, 2) of format (batch index, AC index) where
+    #     `M <= B*N_gt`
+    #   - have duplicates
     coord_ac = tf.stack([coord_gt[:, 0], idx_ac], axis=-1)
 
-    # filtering: one anchor may have multiple matches with GT boxes, which can
-    # lead to overwriting for the same anchor.
-    # We only keep for one anchor the GT box with the highest IoU.
-    # `arr` is a 2D tensor of format (M, 2) where `M <= B*N_gt`:
-    # - the first column is the hash value of the coordinate pairs
-    # - the second column is the best IoU of the corresponding coordinate pairs
+    # 1.3. get deduplicated mask
+    # - 2D tensor of shape (M, 2):
+    #   - 1st column: the hash value of the coordinate pairs
+    #   - 2nd column: foreground GTs' best IoUs (against best matched anchors)
     arr = tf.stack(
         [
             coord_ac[:, 0] * 10000 + coord_ac[:, 1],
@@ -1096,13 +1197,16 @@ def get_gt_gtac(
         ],
         axis=-1,
     )
-    mask = filter_on_max(arr)  # (M,) with M1 True values where M1 <= M
+    # - 1D boolean mask (M,) indicating `M1` GTs to keep (M1 <= M)
+    mask = mask_max(arr)  # (M,) with M1 True values where M1 <= M
 
-    # update target boxes (B, N_ac, 4) with ground truth boxes
-    # - indices: indicates the anchor positions, which have the best IoU
-    # (against GT boxes) above threshold, to be updated
-    # - updates: indicates the best matched GT boxes
-    # corresponding to the anchor positions above
+    # 2. ---------- update target boxes with foreground GTs ----------
+
+    # - indices: deduped anchor coordinates (M1, 2) of format
+    #   (batch index, AC index)
+    # - updates: deduped GT foreground boxes (M1, 4)
+    # - NOTE: in `get_gt_box` only positive anchors are selected, therefore
+    #   using -1.0 as the initial value is fine
     return tf.tensor_scatter_nd_update(
         -tf.ones_like(bx_ac),  # init with -1, (B, N_ac, 4)
         tf.boolean_mask(coord_ac, mask),  # (M1, 2)
@@ -1110,91 +1214,7 @@ def get_gt_gtac(
     )
 
 
-def get_gt_acgt(
-    bx_ac: tf.Tensor,
-    bx_gt: tf.Tensor,
-    idx: tf.Tensor,
-    ious: tf.Tensor,
-) -> tf.Tensor:
-    """Get target boxes for each anchor based on AC's best GT Match (AC-GT).
-
-    There are three types of "target boxes":
-
-    - background: AC-GT IoU < `NEG_TH_ACGT`; represented by all -1.0
-    - foreground:
-      - i.e. ground truth boxes
-      - should be the best matched GT boxes for each anchor
-      - but we are using the AC-GT IoU here, which is a bit awkward:
-        - get coordinates (BATCH_INDEX, ANCHOR_INDEX) of anchors with the AC-GT
-          IoU higher than `POS_TH_ACGT`
-        - get corresponding GT box coordinates (BATCH_INDEX, GT_INDEX)
-    - ignore: AC-GT IoU in [NEG_TH_ACGT, POS_TH_ACGT); represented by all 0.0
-
-    Args:
-        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
-        bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
-        idx (tf.Tensor): pre-computed indices matrix (B, N_ac) where
-            value in [0, N_gt), representing indices of the best mached GT box
-            for each anchor
-        ious (tf.Tensor): pre-computed IoU matrix (B, N_ac) where value in
-            [0, 10000], representing the best IoU for each anchor
-
-    Returns:
-        tf.Tensor: GT boxes (B, N_ac, 4) for each anchor of tf.float32
-          - [-1.0, -1.0, -1.0, -1.0]: background
-          - [0.0, 0.0, 0.0, 0.0]: ignore
-          - otherwise: foreground
-    """
-    # idx_acgt = tf.argmax(ious, axis=2, output_type=tf.int32)
-    # iou_acgt = tf.reduce_max(ious, axis=2)
-
-    # initialize with zeros
-    bx_tgt_acgt = tf.zeros_like(bx_ac, dtype=tf.float32)  # (B, N_ac, 4)
-
-    # -------------------------------------------------------------------------
-    # 1. detect background
-    # -------------------------------------------------------------------------
-
-    bx_tgt_acgt = tf.where(
-        tf.repeat(ious[..., tf.newaxis], 4, axis=-1) < NEG_TH_ACGT,
-        tf.constant([[-1.0]]),
-        bx_tgt_acgt,
-    )  # (N_ac, 4)
-
-    # -------------------------------------------------------------------------
-    # 2. detect AC-GT foreground
-    # -------------------------------------------------------------------------
-
-    # 2.1. identify foreground anchors
-    #   - T/F matrix (B, N_ac) indicating whether the best IoU of each anchor
-    #     is above threshold
-    flag_acgt = ious > POS_TH_ACGT
-    #   - coordinate pairs (M, 2) of anchors where `M <= B*N_ac` of format
-    #     (batch index, AC index), indicating the best matched anchors
-    #   - no duplicates as `tf.where` here returns indices of non-zero
-    #     elements, which are unique
-    coord_ac = tf.cast(tf.where(flag_acgt), tf.int32)
-    # 2.2. For each anchor considered as foreground, finds the ground truth
-    #      box that has the highest IoU with that anchor.
-    #   - vector of best matched GT boxes' indices (M,) where value in
-    #     [0, N_gt)
-    #   - may have duplicates
-    values = tf.gather_nd(idx, coord_ac)
-    #   - coordinate pairs (M, 2) of GT boxes where `M <= B*N_ac` of format
-    #     (batch index, GT index), indicating the best matched GT boxes
-    #   - may have duplicates as `values` may have duplicates
-    coord_gt = tf.stack([coord_ac[:, 0], values], axis=-1)
-
-    # no need to filter as we only concern about the duplicates in `coord_ac`,
-    # which can lead to overwriting of target boxes.
-    return tf.tensor_scatter_nd_update(
-        bx_tgt_acgt,  # (B, N_ac, 4)
-        coord_ac,  # (M, 2)
-        tf.gather_nd(bx_gt, coord_gt),  # (M, 4)
-    )  # (B, N_ac, 4)
-
-
-def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
+def get_tgt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
     """Get ground truth boxes based on IoU for each anchor for RPN training.
 
     Args:
@@ -1212,9 +1232,39 @@ def get_gt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
     iou_gtac = tf.reduce_max(ious, axis=1)
     idx_acgt = tf.argmax(ious, axis=2, output_type=tf.int32)
     iou_acgt = tf.reduce_max(ious, axis=2)
-    bx_tgt_gtac = get_gt_gtac(bx_ac, bx_gt, idx_gtac, iou_gtac)
-    bx_tgt_acgt = get_gt_acgt(bx_ac, bx_gt, idx_acgt, iou_acgt)
+    bx_tgt_gtac = get_tgt_gtac(bx_ac, bx_gt, idx_gtac, iou_gtac)
+    bx_tgt_acgt = get_tgt_acgt(bx_ac, bx_gt, idx_acgt, iou_acgt)
     return tf.where(bx_tgt_gtac >= 0, bx_tgt_gtac, bx_tgt_acgt)
+
+
+def get_tgt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
+    """Get target mask for each anchor based on target boxes for RPN training.
+
+    This implementation relies heavily on that the target box, output of
+    `get_tgt_box`, strictly follows the following convention:
+
+    - background: [-1.0, -1.0, -1.0, -1.0]
+    - ignore: [0.0, 0.0, 0.0, 0.0]
+    - foreground: [y_min, x_min, y_max, x_max]
+
+    Args:
+        bx_tgt (tf.Tensor): target ground truth boxes (B, N_ac, 4), output of
+            `get_tgt_box`
+        bkg (bool, optional): whether to indicate background. Defaults False.
+
+    Returns:
+        tf.Tensor: 0/1 mask for each box (B, N_ac) for each anchor
+    """
+    # 0. coordinate sum of target boxes (B, N_ac):
+    #    - positive: foreground
+    #    - -4.0: background
+    #    - 0.0: ignore
+    _coor_sum = tf.reduce_sum(bx_tgt, axis=-1)
+    if bkg:
+        mask = tf.where(_coor_sum < 0, 1.0, 0.0)
+        return sample_mask(mask, NUM_NEG_RPN)
+    mask = tf.where(_coor_sum > 0, 1.0, 0.0)
+    return sample_mask(mask, NUM_POS_RPN)
 
 
 # =============================================================================
@@ -1634,11 +1684,11 @@ class ModelRPN(tf.keras.Model):
             # and dropout.
             dlt_prd, log_prd, bbx_prd = self(x, training=True)
             # NOTE: cannot use broadcasting for performance
-            bx_tgt = get_gt_box(ac_, bx_gt)
+            bx_tgt = get_tgt_box(ac_, bx_gt)
             # NOTE: cannot use broadcasting for performance
             dlt_tgt = bbox2delta(bx_tgt, ac_)
-            mask_obj = get_gt_mask(bx_tgt, bkg=False)
-            mask_bkg = get_gt_mask(bx_tgt, bkg=True)
+            mask_obj = get_tgt_mask(bx_tgt, bkg=False)
+            mask_bkg = get_tgt_mask(bx_tgt, bkg=True)
             loss = risk_rpn(dlt_prd, dlt_tgt, log_prd, mask_obj, mask_bkg)
 
         trainable_vars = self.trainable_variables
@@ -1789,7 +1839,7 @@ model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
 model.compile(optimizer=optimizer)
 model.fit(
     ds_tr,
-    epochs=100,
+    epochs=30,
     validation_data=ds_va,
     callbacks=[get_cb_ckpt(PATH_CKPT_RPN), cb_earlystop, cb_lr],
 )
