@@ -9,7 +9,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 
 # training
-EPS = 1e-4
+EPS = 1e-5
 
 # model
 STRIDE = 32
@@ -17,19 +17,23 @@ SIZE_RESIZE = 600  # image size for resizing
 SIZE_IMG = 512  # image size
 W = SIZE_IMG  # original image width
 H = SIZE_IMG  # original image height
+SIZE_FM = SIZE_IMG // STRIDE  # feature map size
 C = 3  # number of channels
 W_FM = W // STRIDE  # feature map width
 H_FM = H // STRIDE  # feature map height
 N_ANCHOR = 9  # number of anchors per grid cell
 N_OBJ = 20
-N_SUPP_SCORE = 300  # number of boxes to keep after score suppression
-N_SUPP_NMS = 10  # number of boxes to keep after nms
+N_SUPP_SCORE = 800  # number of boxes to keep after score suppression
+N_SUPP_NMS = 20  # number of boxes to keep after nms
+N_ALIGN_GRID = 2  # number of grid cells to align (tuned)
+C_FM = 2048  # number of channels in the feature map
 NMS_TH = 0.7  # nms threshold
 
 # dataset
 BUFFER_SIZE = 100
 BATCH_SIZE_TR = 8
 BATCH_SIZE_TE = 8
+N_CLASS = 20  # number of classes
 
 # RPN
 R_DROP = 0.2  # dropout rate
@@ -574,10 +578,10 @@ MASK_RPNAC = np.where(
     0.0,
 )
 
-RPNAC = anchors_raw[MASK_RPNAC == 1]  # valid anchors (N_VAL_AC, 4)
+# number of valid anchors (1384)
+N_VAL_AC = int(MASK_RPNAC.sum())
 
-# number of valid anchors
-N_RPNAC = int(MASK_RPNAC.sum())
+RPNAC = anchors_raw[MASK_RPNAC == 1]  # valid anchors (N_VAL_AC, 4)
 
 # set as read-only
 RPNAC.flags.writeable = False
@@ -770,11 +774,12 @@ def iou(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
     Returns:
         tf.Tensor: IoU tensor of shape (N1, N2, ..., Nk)
     """
+    area_inter = interarea(bbox_prd, bbox_lbl)
+    area_inter = tf.maximum(area_inter, 0.0)
     area_pred = area(bbox_prd)
     area_label = area(bbox_lbl)
-    area_inter = interarea(bbox_prd, bbox_lbl)
     area_union = area_pred + area_label - area_inter
-    return (area_inter + EPS) / (area_union + EPS)
+    return area_inter / (area_union + EPS)
 
 
 def iou_mat(bbox_prd: tf.Tensor, bbox_lbl: tf.Tensor) -> tf.Tensor:
@@ -976,7 +981,7 @@ def bbox2delta(bbox_l: tf.Tensor, bbox_r: tf.Tensor) -> tf.Tensor:
         ],
         axis=-1,
     )
-    return tf.clip_by_value(bx_del, -999.0, 999.0)
+    return tf.clip_by_value(bx_del, -10.0, 10.0)
 
 
 # =============================================================================
@@ -1004,13 +1009,14 @@ def sample_mask(mask: tf.Tensor, num: int) -> tf.Tensor:
     return tf.cast(rand < th, tf.float32) * mask
 
 
-def get_tgt_acgt(
-    bx_ac: tf.Tensor,
-    bx_gt: tf.Tensor,
+def get_pos_acgt(
     idx: tf.Tensor,
     ious: tf.Tensor,
-) -> tf.Tensor:
-    """Get target boxes for each anchor based on AC's best GT Match (AC-GT).
+    th: int,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Get positive indices based on AC's best GT Match (AC-GT).
+
+    Target can be bounding boxes (B, N_ac, 4) or boxes + labels (B, N_ac, 5).
 
     There are three types of "target boxes":
 
@@ -1029,57 +1035,52 @@ def get_tgt_acgt(
     - ignore: AC-GT IoU in [NEG_TH_ACGT, POS_TH_ACGT); represented by all 0.0
 
     Args:
-        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
-        bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
         idx (tf.Tensor): pre-computed indices matrix (B, N_ac) where
             value in [0, N_gt), representing indices of the best mached GT box
             for each anchor
         ious (tf.Tensor): pre-computed IoU matrix (B, N_ac) where value in
             [0, 10000], representing the best IoU for each anchor
+        th (int): AC-GT positive threshold
 
     Returns:
-        tf.Tensor: GT boxes (B, N_ac, 4) for each anchor of tf.float32
-          - [-1.0, -1.0, -1.0, -1.0]: background
-          - [0.0, 0.0, 0.0, 0.0]: ignore
-          - otherwise: foreground
+        tuple[tf.Tensor, tf.Tensor]: positive indices of shape (M, 2) where
+            `M` is the number of positive samples:
+            - coordinates of anchors where GTs will be assigned
+            - coordinates of GTs to be assigned
     """
-    # initialize with zeros
-    bx_tgt_acgt = tf.zeros_like(bx_ac, dtype=tf.float32)  # (B, N_ac, 4)
-
-    # 1. ---------- detect background ----------
-
-    bx_tgt_acgt = tf.where(
-        tf.repeat(ious[..., tf.newaxis], 4, axis=-1) < NEG_TH_ACGT,
-        tf.constant([[-1.0]]),
-        bx_tgt_acgt,
-    )  # (N_ac, 4)
-
-    # 2. ---------- detect AC-GT foreground ----------
-
-    # 2.1. identify foreground anchors
-    #   - T/F matrix (B, N_ac) indicating whether the best IoU of each anchor
-    #     is above threshold
-    flag_acgt = ious > POS_TH_ACGT
-    #   - foreground anchor coordinates (M, 2) of format
-    #     (batch index, AC index) where `M <= B*N_ac`
-    #   - no duplicate
+    # 1. identify foreground anchors
+    #    - T/F matrix (B, N_ac) indicating whether the best IoU of each anchor
+    #      is above threshold
+    flag_acgt = ious > th
+    #    - foreground anchor coordinates (M, 2) of format
+    #      (batch index, AC index) where `M <= B*N_ac`
+    #    - no duplicate
     coord_ac = tf.cast(tf.where(flag_acgt), tf.int32)
-    # 2.2. For each foreground anchor considered, find its best matched GT box
-    #      i.e. the GT box with the highest AC-GT IoU
-    #   - vector of best matched GTs' indices (M,) where value in [0, N_gt)
-    #   - may have duplicates
+    # 2. For each foreground anchor considered, find its best matched GT box
+    #    i.e. the GT box with the highest AC-GT IoU
+    #    - vector of best matched GTs' indices (M,) where value in [0, N_gt)
+    #    - may have duplicates
     values = tf.gather_nd(idx, coord_ac)
-    #   - best matched GT coordinates (M, 2) of of format
-    #     (batch index, GT index)
-    #   - may have duplicates as `ind_gt` may have duplicates
+    #    - best matched GT coordinates (M, 2) of of format
+    #      (batch index, GT index)
+    #    - may have duplicates as `ind_gt` may have duplicates
     coord_gt = tf.stack([coord_ac[:, 0], values], axis=-1)
 
-    # no deduplication needed here as `coord_ac` is unique
-    return tf.tensor_scatter_nd_update(
-        bx_tgt_acgt,  # (B, N_ac, 4)
-        coord_ac,  # (M, 2)
-        tf.gather_nd(bx_gt, coord_gt),  # (M, 4)
-    )  # (B, N_ac, 4)
+    return coord_ac, coord_gt
+
+
+def get_neg_acgt(ious: tf.Tensor, th: int) -> tf.Tensor:
+    """Get negative mask based on AC's best GT Match (AC-GT).
+
+    Args:
+        ious (tf.Tensor): pre-computed IoU matrix (B, N_ac) where value in
+            [0, 10000], representing the best IoU for each anchor
+        th (int): AC-GT negative threshold
+
+    Returns:
+        tf.Tensor: negative boolean mask of shape (B, N_ac, 1)
+    """
+    return (ious < th)[..., tf.newaxis]
 
 
 def mask_max(x: tf.Tensor) -> tf.Tensor:
@@ -1109,13 +1110,12 @@ def mask_max(x: tf.Tensor) -> tf.Tensor:
     return tf.reduce_any(x[:, 1][:, tf.newaxis] == max_indices, axis=-1)
 
 
-def get_tgt_gtac(
-    bx_ac: tf.Tensor,
-    bx_gt: tf.Tensor,
+def get_pos_gtac(
     idx: tf.Tensor,
     ious: tf.Tensor,
-) -> tf.Tensor:
-    """Get target boxes for each anchor based on GT's best AC Match (GT-AC).
+    th: int,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Get positive indices based on GT's best AC Match (GT-AC).
 
     Things are a bit different here compared to the AC-GT case:
 
@@ -1129,7 +1129,7 @@ def get_tgt_gtac(
 
     Reason for Deduplication:
 
-    - The final output should of shape (B, N_ac, 4), suitable for comparison
+    - The final output should of shape (B, N_ac, C), suitable for comparison
       with the anchors; its content should be foreground GTs or ignoring masks
       (0.0).
     - Yet for one anchor, i.e. at one position of (B, N_ac), there may be
@@ -1143,50 +1143,49 @@ def get_tgt_gtac(
       - in case of multiple GT boxes matching to the same anchor, keeping the
         one with the highest IoU
     - Procedure:
-      - get foreground GTs in shape (M, 4)
+      - get foreground GTs in shape (M, C)
       - get their best matched anchor coordinates (M, 2) of format
         (batch index, anchor index)
       - get, for deduplication, mask of shape (M,) indicating `M1` GTs to keep
         where `M1 <= M`
-      - via the mask, get deduplicated GTs (M1, 4) and their corresponding
+      - via the mask, get deduplicated GTs (M1, C) and their corresponding
         anchor coordinates (M1, 2)
       - update target boxes with deduped GT foreground boxes
 
     Args:
-        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
-        bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
         idx (tf.Tensor): pre-computed indices matrix (B, N_gt) where value in
             [0, N_ac), representing indices of the best mached anchor for each
             GT box
         ious (tf.Tensor): pre-computed IoU matrix (B, N_gt) where value in
             [0, 10000], representing the best IoU for each GT box
+        th (int): GT-AC positive threshold
 
     Returns:
-        tf.Tensor: best IoU matched GT boxes (B, N_ac, 4) for anchors
-          - [0.0, 0.0, 0.0, 0.0]: ignored
-          - positive: foreground
+        tuple[tf.Tensor, tf.Tensor]: positive indices of anchor and GT
+            respectively:
+            - shape: (M, 2) where `M` is the number of positive samples
+            - car: coordinates of anchors where GTs will be assigned
+            - cdr: coordinates of GTs to be assigned
     """
-    # 1. ---------- identify foreground GTs ----------
-
-    # 1.1. get foreground GT coordinates
-    #   - T/F matrix (B, N_gt) indicating whether the best IoU of each GT box
-    #     is above threshold
-    flag_gtac = ious > POS_TH_GTAC  # (B, N_gt)
-    #   - GT coordinates (M, 2) of format (batch index, GT index) where
-    #     `M <= B*N_gt`
-    #   - coordinates are unique
+    # 1. get foreground GT coordinates
+    #    - T/F matrix (B, N_gt) indicating whether the best IoU of each GT box
+    #      is above threshold
+    flag_gtac = ious > th  # (B, N_gt)
+    #    - GT coordinates (M, 2) of format (batch index, GT index) where
+    #      `M <= B*N_gt`
+    #    - coordinates are unique
     coord_gt = tf.cast(tf.where(flag_gtac), tf.int32)
-    # 1.2. get corresponding anchor coordinates
-    #   - vector of `M` anchor indices, best matched anchors for the `M`
-    #     foreground GTs
-    #   - have duplicates
+    # 2. get corresponding anchor coordinates
+    #    - vector of `M` anchor indices, best matched anchors for the `M`
+    #      foreground GTs
+    #    - have duplicates
     idx_ac = tf.gather_nd(idx, coord_gt)
-    #   - anchor coordinates (M, 2) of format (batch index, AC index) where
-    #     `M <= B*N_gt`
-    #   - have duplicates
+    #    - anchor coordinates (M, 2) of format (batch index, AC index) where
+    #      `M <= B*N_gt`
+    #    - have duplicates
     coord_ac = tf.stack([coord_gt[:, 0], idx_ac], axis=-1)
 
-    # 1.3. get deduplicated mask
+    # 3. get deduplicated mask
     # - 2D tensor of shape (M, 2):
     #   - 1st column: the hash value of the coordinate pairs
     #   - 2nd column: foreground GTs' best IoUs (against best matched anchors)
@@ -1200,56 +1199,171 @@ def get_tgt_gtac(
     # - 1D boolean mask (M,) indicating `M1` GTs to keep (M1 <= M)
     mask = mask_max(arr)  # (M,) with M1 True values where M1 <= M
 
-    # 2. ---------- update target boxes with foreground GTs ----------
-
-    # - indices: deduped anchor coordinates (M1, 2) of format
-    #   (batch index, AC index)
-    # - updates: deduped GT foreground boxes (M1, 4)
-    # - NOTE: in `get_gt_box` only positive anchors are selected, therefore
-    #   using -1.0 as the initial value is fine
-    return tf.tensor_scatter_nd_update(
-        -tf.ones_like(bx_ac),  # init with -1, (B, N_ac, 4)
-        tf.boolean_mask(coord_ac, mask),  # (M1, 2)
-        tf.boolean_mask(tf.boolean_mask(bx_gt, flag_gtac), mask),  # (M1, 4)
-    )
+    # 4. get deduplicated anchor and GT coordinates
+    coord_ac_ = tf.boolean_mask(coord_ac, mask)
+    coord_gt_ = tf.boolean_mask(coord_gt, mask)
+    return coord_ac_, coord_gt_
 
 
-def get_tgt_box(bx_ac: tf.Tensor, bx_gt: tf.Tensor) -> tf.Tensor:
+def get_tgt_rpn(bbx_ac: tf.Tensor, bbx_gt: tf.Tensor) -> tf.Tensor:
     """Get ground truth boxes based on IoU for each anchor for RPN training.
 
     Args:
-        bx_ac (tf.Tensor): anchor tensor (B, N_ac, 4)
-        bx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
+        bbx_ac (tf.Tensor): anchor tensor (B, N_ac, C)
+        bbx_gt (tf.Tensor): ground truth tensor (B, N_gt, C)
 
     Returns:
-        tf.Tensor: ground truth boxes (B, N_ac, 4) for each anchor (tf.float32)
-          - [-1.0, -1.0, -1.0, -1.0]: background
-          - [0.0, 0.0, 0.0, 0.0]: ignore
+        tf.Tensor: ground truth boxes (B, N_ac, C) for each anchor (tf.float32)
+          - [-2.0, -2.0, -2.0, -2.0]: background
+          - [-1.0, -1.0, -1.0, -1.0]: ignore
           - otherwise: foreground
     """
-    ious = tf.cast(IOU_SCALE * iou_batch(bx_ac, bx_gt), tf.int32)
+    ious = tf.cast(IOU_SCALE * iou_batch(bbx_ac, bbx_gt), tf.int32)
     idx_gtac = tf.argmax(ious, axis=1, output_type=tf.int32)
     iou_gtac = tf.reduce_max(ious, axis=1)
     idx_acgt = tf.argmax(ious, axis=2, output_type=tf.int32)
     iou_acgt = tf.reduce_max(ious, axis=2)
-    bx_tgt_gtac = get_tgt_gtac(bx_ac, bx_gt, idx_gtac, iou_gtac)
-    bx_tgt_acgt = get_tgt_acgt(bx_ac, bx_gt, idx_acgt, iou_acgt)
-    return tf.where(bx_tgt_gtac >= 0, bx_tgt_gtac, bx_tgt_acgt)
+
+    mask_neg_acgt = get_neg_acgt(iou_acgt, NEG_TH_ACGT)
+    ind_gtac_ac, ind_gtac_gt = get_pos_gtac(idx_gtac, iou_gtac, POS_TH_GTAC)
+    ind_acgt_ac, ind_acgt_gt = get_pos_acgt(idx_acgt, iou_acgt, POS_TH_ACGT)
+
+    # ---------- generate target boxes ----------
+    val_neg = -2.0  # negative value
+    val_ign = -1.0  # ignored value
+    # initialize with neutral values (-1.0)
+    bbx_pos_gtac = val_ign * tf.ones_like(bbx_ac, dtype=tf.float32)
+    # update negative with mask
+    bbx_tgt_acgt = tf.where(
+        tf.repeat(mask_neg_acgt, 4, axis=-1),
+        tf.constant([[val_neg]]),
+        bbx_pos_gtac,
+    )
+    # update with positive indices
+    bbx_tgt_acgt = tf.tensor_scatter_nd_update(
+        bbx_tgt_acgt,  # (B, N_ac, C)
+        ind_acgt_ac,  # (M, 2)
+        tf.gather_nd(bbx_gt, ind_acgt_gt),  # (M, C)
+    )
+    # GT-AC positive boxes; -1 represents ignored
+    bbx_pos_gtac = tf.tensor_scatter_nd_update(
+        val_ign * tf.ones_like(bbx_ac, dtype=tf.float32),
+        ind_gtac_ac,  # (M, 2)
+        tf.gather_nd(bbx_gt, ind_gtac_gt),
+    )
+    # - if GT-AC positive and AC-GT not positive: keep GT-AC targets
+    # - otherwise: update with AC-GT targets
+    return tf.where(
+        tf.logical_and(bbx_pos_gtac > val_ign, bbx_tgt_acgt <= val_ign),
+        bbx_pos_gtac,
+        bbx_tgt_acgt,
+    )
+
+
+def get_tgt_rcnn(
+    roi: tf.Tensor,
+    bbx_gt: tf.Tensor,
+    logits: tf.Tensor,
+    lab_gt: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor]:
+    """Get ground truth boxes based on IoU for each anchor for R-CNN training.
+
+    Args:
+        roi (tf.Tensor): anchor tensor (B, N_ac, 4)
+        bbx_gt (tf.Tensor): ground truth tensor (B, N_gt, 4)
+        logits (tf.Tensor): logits tensor (B, N_ac, N_CLASS)
+        lab_gt (tf.Tensor): ground truth label tensor (B, N_gt, 1)
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor]: target boxes and labels
+    """
+    ious = tf.cast(IOU_SCALE * iou_batch(roi, bbx_gt), tf.int32)
+    idx_gtac = tf.argmax(ious, axis=1, output_type=tf.int32)
+    iou_gtac = tf.reduce_max(ious, axis=1)
+    idx_acgt = tf.argmax(ious, axis=2, output_type=tf.int32)
+    iou_acgt = tf.reduce_max(ious, axis=2)
+
+    mask_neg_acgt = get_neg_acgt(iou_acgt, NEG_TH_ACGT)
+    ind_gtac_ac, ind_gtac_gt = get_pos_gtac(idx_gtac, iou_gtac, POS_TH_GTAC)
+    ind_acgt_ac, ind_acgt_gt = get_pos_acgt(idx_acgt, iou_acgt, POS_TH_ACGT)
+
+    val_neg = -2.0  # negative value
+    val_ign = -1.0  # ignored value
+
+    # ---------- generate target boxes ----------
+    # initialize with neutral values (-1.0)
+    bbx_pos_gtac = val_ign * tf.ones_like(roi, dtype=tf.float32)
+    # update negative with mask
+    bbx_tgt_acgt = tf.where(
+        tf.repeat(mask_neg_acgt, 4, axis=-1),
+        tf.constant([[val_neg]]),
+        bbx_pos_gtac,
+    )
+    # update with positive indices
+    bbx_tgt_acgt = tf.tensor_scatter_nd_update(
+        bbx_tgt_acgt,  # (B, N_ac, C)
+        ind_acgt_ac,  # (M, 2)
+        tf.gather_nd(bbx_gt, ind_acgt_gt),  # (M, C)
+    )
+    # GT-AC positive boxes; -1 represents ignored
+    bbx_pos_gtac = tf.tensor_scatter_nd_update(
+        val_ign * tf.ones_like(roi, dtype=tf.float32),
+        ind_gtac_ac,  # (M, 2)
+        tf.gather_nd(bbx_gt, ind_gtac_gt),
+    )
+    # - if GT-AC positive and AC-GT not positive: keep GT-AC targets
+    # - otherwise: update with AC-GT targets
+    bbx_tgt = tf.where(
+        tf.logical_and(bbx_pos_gtac > val_ign, bbx_tgt_acgt <= val_ign),
+        bbx_pos_gtac,
+        bbx_tgt_acgt,
+    )
+
+    # ---------- generate target labels ----------
+    # initialize with neutral values (-1.0)
+    lab_pos_gtac = val_ign * tf.ones_like(logits[..., :1], dtype=tf.float32)
+    # update negative with mask
+    lab_tgt_acgt = tf.where(
+        mask_neg_acgt,
+        tf.constant([[val_neg]]),
+        lab_pos_gtac,
+    )
+    # update with positive indices
+    lab_tgt_acgt = tf.tensor_scatter_nd_update(
+        lab_tgt_acgt,  # (B, N_ac, C)
+        ind_acgt_ac,  # (M, 2)
+        tf.gather_nd(lab_gt, ind_acgt_gt),  # (M, C)
+    )
+    # GT-AC positive boxes; -1 represents ignored
+    lab_pos_gtac = tf.tensor_scatter_nd_update(
+        val_ign * tf.ones_like(logits[..., :1], dtype=tf.float32),
+        ind_gtac_ac,  # (M, 2)
+        tf.gather_nd(lab_gt, ind_gtac_gt),
+    )
+    # - if GT-AC positive and AC-GT not positive: keep GT-AC targets
+    # - otherwise: update with AC-GT targets
+    lab_tgt = tf.where(
+        tf.logical_and(lab_pos_gtac > val_ign, lab_tgt_acgt <= val_ign),
+        lab_pos_gtac,
+        lab_tgt_acgt,
+    )
+    lab_tgt = tf.where(lab_tgt <= val_ign, 1.0 * N_CLASS, lab_tgt)
+    return bbx_tgt, lab_tgt
 
 
 def get_tgt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
     """Get target mask for each anchor based on target boxes for RPN training.
 
     This implementation relies heavily on that the target box, output of
-    `get_tgt_box`, strictly follows the following convention:
+    `get_tgt_rpn`, strictly follows the following convention:
 
-    - background: [-1.0, -1.0, -1.0, -1.0]
-    - ignore: [0.0, 0.0, 0.0, 0.0]
+    - background: [-2.0, -2.0, -2.0, -2.0]
+    - ignore: [-1.0, -1.0, -1.0, -1.0]
     - foreground: [y_min, x_min, y_max, x_max]
 
     Args:
         bx_tgt (tf.Tensor): target ground truth boxes (B, N_ac, 4), output of
-            `get_tgt_box`
+            `get_tgt_rpn`
         bkg (bool, optional): whether to indicate background. Defaults False.
 
     Returns:
@@ -1257,13 +1371,15 @@ def get_tgt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
     """
     # 0. coordinate sum of target boxes (B, N_ac):
     #    - positive: foreground
-    #    - -4.0: background
-    #    - 0.0: ignore
+    #    - -8.0: background
+    #    - -4.0: ignore
+    th_neg = -8.0
+    th_ign = -4.0
     _coor_sum = tf.reduce_sum(bx_tgt, axis=-1)
     if bkg:
-        mask = tf.where(_coor_sum < 0, 1.0, 0.0)
+        mask = tf.where(_coor_sum <= th_neg, 1.0, 0.0)
         return sample_mask(mask, NUM_NEG_RPN)
-    mask = tf.where(_coor_sum > 0, 1.0, 0.0)
+    mask = tf.where(_coor_sum > th_ign, 1.0, 0.0)
     return sample_mask(mask, NUM_POS_RPN)
 
 
@@ -1272,7 +1388,7 @@ def get_tgt_mask(bx_tgt: tf.Tensor, *, bkg: bool = False) -> tf.Tensor:
 # =============================================================================
 
 
-def roi(dlt: tf.Tensor, buffer: float = 1e-1) -> tf.Tensor:
+def block_roi(dlt: tf.Tensor, buffer: float = 1e-1) -> tf.Tensor:
     """Get RoI bounding boxes from anchor deltas.
 
     Args:
@@ -1295,16 +1411,16 @@ def roi(dlt: tf.Tensor, buffer: float = 1e-1) -> tf.Tensor:
 
 SEED_INIT = 42
 MASK_AC = tf.constant(MASK_RPNAC, dtype=tf.float32)  # (N_ANCHOR,)
-N_VAL_AC = N_RPNAC  # number of valid anchors, also the dim of axis=1
 
 reg_l2 = tf.keras.regularizers.l2(0.0005)
 # Derive three unique seeds from the initial seed
 seed_cnn_fm = hash(SEED_INIT) % (2**32)
 seed_cnn_dlt = hash(seed_cnn_fm) % (2**32)
 seed_cnn_lbl = hash(seed_cnn_dlt) % (2**32)
+seed_next = hash(seed_cnn_lbl) % (2**32)
 
 
-def rpn(
+def block_rpn(
     fm: tf.Tensor,
     h_fm: int,
     w_fm: int,
@@ -1322,7 +1438,7 @@ def rpn(
             - deltas: (n_batch, N_VAL_AC, 4)
             - labels: (n_batch, N_VAL_AC, 1)
     """
-    # TBD: residual connections?
+    # TODO: residual connections?
     layer_drop_entr = tf.keras.layers.Dropout(
         R_DROP,
         name="rpn_dropout_entr",
@@ -1389,24 +1505,30 @@ def rpn(
     dlt_val = tf.boolean_mask(dlt_flat, MASK_AC == 1, axis=1)
     log_val = tf.boolean_mask(log_flat, MASK_AC == 1, axis=1)
 
+    # NOTE: the layers are used for freezing weights when e.g. training the
+    #   R-CNN head and the RPN weights should not be updated. One exception is
+    #   the batch normalization (GPU), due to this issue:
+    #   "A deterministic GPU implementation of fused batch-norm backprop, when
+    #    training is disabled, is not currently available."
+    #   The BN layer of the logit should not be excluded as the R-CNN head
+    #   does not use the logits and excluding it would result in None gradients
+    layers = [
+        layer_drop_entr,
+        layer_conv_share,
+        layer_gn_share,
+        layer_relu_share,
+        layer_drop_share,
+        layer_conv_dlt,
+        # layer_bn_dlt,
+        layer_drop_dlt,
+        layer_conv_log,
+        layer_bn_log,
+        layer_drop_log,
+    ]
+
     # for shape inference
-    return (
-        tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
-        tf.reshape(log_val, (-1, N_VAL_AC, 1)),
-        [
-            layer_drop_entr,
-            layer_conv_share,
-            layer_gn_share,
-            layer_relu_share,
-            layer_drop_share,
-            layer_conv_dlt,
-            layer_bn_dlt,
-            layer_drop_dlt,
-            layer_conv_log,
-            layer_bn_log,
-            layer_drop_log,
-        ],
-    )
+    return (tf.reshape(dlt_val, (-1, N_VAL_AC, 4)),
+            tf.reshape(log_val, (-1, N_VAL_AC, 1)), layers)
 
 
 # -----------------------------------------------------------------------------
@@ -1471,7 +1593,7 @@ def suppress_score(bx: tf.Tensor, log: tf.Tensor, n_score: int) -> tf.Tensor:
     return tf.reshape(roi_topk, (-1, n_score, 4))
 
 
-def suppress(
+def block_nms(
     bx: tf.Tensor,
     log: tf.Tensor,
     n_score: int,
@@ -1482,6 +1604,13 @@ def suppress(
 
     It receives the RPN logits and RoIs and produces the suppressed Region of
     Interests (RoI).
+
+    default procedures (TODO):
+
+    - score thresholding: discard proposals with an objectness score lower than
+      a given threshold
+    - non-maximum suppression (NMS): remove redundant proposals
+    - top-k: keep only the top-k proposals
 
     Args:
         bx (tf.Tensor): RoI bounding box. Shape [B, N_val_ac, 4].
@@ -1506,25 +1635,271 @@ def suppress(
     return tf.reshape(roi_nms, (-1, n_nms, 4))
 
 
+# -----------------------------------------------------------------------------
+# RoI Align
+# -----------------------------------------------------------------------------
+
+
+def div_roi(rois: tf.Tensor, n_grid: int) -> tf.Tensor:
+    """Divide the RoI into a grid of bins.
+
+    Args:
+        rois (tf.Tensor): A tensor of shape (B, N_ROI, 4) representing the RoI
+            coordinates as [y1, x1, y2, x2].
+        n_grid (int): The number of bins to divide the RoI into.
+
+    Returns:
+        tf.Tensor: A tensor of shape (B, N_ROI, N_BIN, 4) representing
+            the coordinates of the bins, where N_BIN = n_grid * n_grid.
+    """
+
+    def get_yxyx(x: tf.Tensor, y: tf.Tensor, i: int, j: int) -> tf.Tensor:
+        """Get the coordinates of the bin at (i, j)."""
+        return tf.stack([y[..., j], x[..., i], y[..., j + 1], x[..., i + 1]],
+                        axis=-1)
+
+    # def helper(roi: tf.Tensor, n_grid: int) -> tf.Tensor:
+    #     """Divide a single batch of RoIs into a grid of bins."""
+    y_lo, x_lo, y_hi, x_hi = (
+        rois[..., 0],
+        rois[..., 1],
+        rois[..., 2],
+        rois[..., 3],
+    )
+    y_del = (y_hi - y_lo) / (n_grid + EPS)
+    x_del = (x_hi - x_lo) / (n_grid + EPS)
+    xs = tf.stack([x_lo + x_del * i for i in range(n_grid + 1)], axis=-1)
+    ys = tf.stack([y_lo + y_del * i for i in range(n_grid + 1)], axis=-1)
+    ij = np.stack(np.meshgrid(range(n_grid), range(n_grid), indexing="ij"),
+                  axis=-1).reshape(-1, 2)
+    return tf.stack([get_yxyx(xs, ys, i, j) for i, j in ij], axis=-2)
+
+
+def sample_point(roi: tf.Tensor) -> tf.Tensor:
+    """Calculate four fixed sampling points for RoI Align within a single bin.
+
+    Args:
+        roi (tf.Tensor): A tensor of shape (N1, N2, ..., 4) representing the
+            RoI coordinates as [y1, x1, y2, x2].
+
+    Returns:
+        tf.Tensor: A tensor of shape (N1, N2, ..., 4, 2) representing the four
+            sampling points for each RoI.
+    """
+    y_lo, x_lo, y_hi, x_hi = roi[..., 0], roi[..., 1], roi[..., 2], roi[..., 3]
+
+    # Calculate the step size for each bin
+    y_del = y_hi - y_lo
+    x_del = x_hi - x_lo
+
+    # Calculate the fixed sampling points at each quarter
+    return tf.stack(
+        [
+            tf.stack([y_lo + y_del * 0.25, x_lo + x_del * 0.25], axis=-1),
+            tf.stack([y_lo + y_del * 0.25, x_lo + x_del * 0.75], axis=-1),
+            tf.stack([y_lo + y_del * 0.75, x_lo + x_del * 0.25], axis=-1),
+            tf.stack([y_lo + y_del * 0.75, x_lo + x_del * 0.75], axis=-1),
+        ],
+        axis=-2,
+    )
+
+
+def bi_interp(fm: tf.Tensor, pts: tf.Tensor) -> tf.Tensor:
+    """Bilinear interpolate a given point on the feature map.
+
+    :NOTE:
+    - A feature map is usually visualized as a "chessboard", where each cell,
+      i.e. one hxw coordinate, corresponds to an **area** on the board.
+    - To interpolate a point on the feature map, however, the feature map
+      should be depicted as a "Chinese checkerboard", where each hxw coordinate
+      corresponds to a **corner** of the cell.
+    - The lengths of the edges, therefore, are h-1 and w-1 (not h and w), which
+      will be used to calculate the absolute coordinates of points on the
+      feature map.
+
+    :PROCEDURE:
+    1. find on the feature map the four nearest points i.e. integer indices
+       around the x and y coordinates.
+    2. calculate the weights for each point as the area of the rectangle
+       formed by the point and the OPPOSITE CORNER of the feature map cell:
+
+       (y_lo, x_lo)        (y_lo, x_hi)
+       +-------------------+
+       |                   |
+       |     wbr     | wbl |
+       |          (y, x)   |
+       | - - - - - - * - - |
+       |                   |
+       |             |     |
+       |                   |
+       |     wtr     | wtl |
+       |                   |
+       |             |     |
+       +-------------------+
+       (y_hi, x_lo)        (y_hi, x_hi)
+
+    Args:
+        fm (tf.Tensor): A 4D tensor of shape (B, H, W, C).
+        pts (tf.Tensor): A tensor of shape (B, N_BIN, N_SAMPLE, 2) representing
+            the coordinates of the points to interpolate.
+
+    Returns:
+        tf.Tensor: A tensor of shape (B, N_BIN, N_SAMPLE, C) representing the
+            interpolated values at the given coordinates.
+    """
+    # get H and W of the feature map
+    _, h, w, _ = tf.shape(fm)
+    # Y / X coordinates of the points; shape (B, N_BIN, N_SAMPLE)
+    y = pts[..., 0] * tf.cast(h - 1, tf.float32)
+    x = pts[..., 1] * tf.cast(w - 1, tf.float32)
+    x_lo = tf.floor(x)
+    x_hi = x_lo + 1
+    y_lo = tf.floor(y)
+    y_hi = y_lo + 1
+
+    # weights for each point; shape (B, N_BIN, N_SAMPLE)
+    # - sum of the weights is 1
+    # - the closer the point to the corner, the higher the weight
+    w_tl = (x_hi - x) * (y_hi - y)
+    w_tr = (x - x_lo) * (y_hi - y)
+    w_bl = (x_hi - x) * (y - y_lo)
+    w_br = (x - x_lo) * (y - y_lo)
+
+    # indices of the four nearest points around the x and y coordinates
+    # shape (B, N_BIN, N_SAMPLE, 2)
+    ind_tl = tf.cast(tf.stack([y_lo, x_lo], axis=-1), tf.int32)
+    ind_tr = tf.cast(tf.stack([y_lo, x_hi], axis=-1), tf.int32)
+    ind_bl = tf.cast(tf.stack([y_hi, x_lo], axis=-1), tf.int32)
+    ind_br = tf.cast(tf.stack([y_hi, x_hi], axis=-1), tf.int32)
+
+    # values at the four corners around the point
+    # shape (B, N_BIN, N_SAMPLE, C)
+    v_tl = tf.gather_nd(fm, ind_tl, batch_dims=1)
+    v_tr = tf.gather_nd(fm, ind_tr, batch_dims=1)
+    v_bl = tf.gather_nd(fm, ind_bl, batch_dims=1)
+    v_br = tf.gather_nd(fm, ind_br, batch_dims=1)
+
+    return (w_tl[..., tf.newaxis] * v_tl + w_tr[..., tf.newaxis] * v_tr +
+            w_bl[..., tf.newaxis] * v_bl + w_br[..., tf.newaxis] * v_br)
+
+
+def block_roialign(
+    fm: tf.Tensor,
+    roi: tf.Tensor,
+    n_grid: int,
+    n_roi: int,
+) -> tf.Tensor:
+    """RoIAlign layer for TensorFlow 2.
+
+    Args:
+        fm (tf.Tensor): A 4D tensor of shape (B, H, W, C) representing the
+            input feature map.
+        roi (tf.Tensor): A tensor of shape (B, N_ROI, 4) representing the RoI
+            coordinates as [y1, x1, y2, x2].
+        n_grid (int): The number of bins to divide the RoI into.
+        n_roi (int): The dimension of the number of RoIs.
+
+    Returns:
+        tf.Tensor: A tensor of shape (B, N_ROI, N_BIN * C) representing the
+            pooled features, where N_BIN = n_grid * n_grid.
+    """
+    # Divide the RoI into a grid of bins
+    subroi = div_roi(roi, n_grid)  # (B, N_ROI, N_BIN, 4)
+    # Calculate the fixed sampling points for each bin
+    pts = sample_point(subroi)  # (B, N_ROI, N_BIN, 4, 2)
+    # Bilinear interpolate the points on the feature map
+    roi_fm = bi_interp(fm, pts)  # (B, N_ROI, N_BIN, 4, C)
+    # Average pooling
+    roi_pooled = tf.reduce_mean(roi_fm, axis=-2)  # (B, N_ROI, N_BIN, C)
+    # flatten the RoIs
+    # TODO:
+    return tf.reshape(roi_pooled, (-1, n_roi, C_FM * n_grid * n_grid))
+
+
+# -----------------------------------------------------------------------------
+# RCNN
+# -----------------------------------------------------------------------------
+N_HIDDEN = 1024
+# Derive three unique seeds from the initial seed
+seed_fc_h1 = hash(seed_next) % (2**32)
+seed_fc_h2 = hash(seed_fc_h1) % (2**32)
+seed_fc_cls = hash(seed_fc_h2) % (2**32)
+seed_fc_reg = hash(seed_fc_cls) % (2**32)
+
+
+def block_rcnn(
+    rois: tf.Tensor,
+) -> tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]:
+    """R-CNN Detection Head for classification and bounding box regression.
+
+    Args:
+        rois (tf.Tensor): RoIs. Shape [B, N_ROI, N_BIN, C].
+
+    Returns:
+        tuple[tf.Tensor, tf.Tensor, list[tf.keras.layers.Layer]]: predicted
+        classes, predicted bounding box deltas, and the R-CNN layers for weight
+        freezing.
+            - delta: (B, N_ROI, 4)
+            - class: (B, N_ROI, N_CLASS + 1)
+    """
+    # fully connected layers
+    layer_fc_h1 = tf.keras.layers.Dense(
+        N_HIDDEN,
+        kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_fc_h1),
+        kernel_regularizer=reg_l2,
+        activation="relu",
+        name="rcnn_fc_h1",
+    )
+    layer_fc_h2 = tf.keras.layers.Dense(
+        N_HIDDEN,
+        kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_fc_h2),
+        kernel_regularizer=reg_l2,
+        activation="relu",
+        name="rcnn_fc_h2",
+    )
+    layer_fc_cls = tf.keras.layers.Dense(
+        N_CLASS + 1,
+        kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_fc_cls),
+        kernel_regularizer=reg_l2,
+        activation=None,
+        name="rcnn_fc_cls",
+    )
+    layer_fc_reg = tf.keras.layers.Dense(
+        4,
+        kernel_initializer=tf.keras.initializers.HeNormal(seed=seed_fc_reg),
+        kernel_regularizer=reg_l2,
+        activation=None,
+        name="rcnn_fc_reg",
+    )
+
+    # forward pass
+    vec = layer_fc_h1(rois)
+    vec = layer_fc_h2(vec)
+    reg = layer_fc_reg(vec)
+    logit = layer_fc_cls(vec)
+
+    return reg, logit, [layer_fc_h1, layer_fc_h2, layer_fc_reg, layer_fc_cls]
+
+
 # =============================================================================
 # SECTION: loss
 # =============================================================================
 
 
-def risk_rpn_reg(
-    bx_prd: tf.Tensor,
+def risk_bbx_reg(
     bx_tgt: tf.Tensor,
+    bx_prd: tf.Tensor,
     mask: tf.Tensor,
 ) -> tf.Tensor:
-    """Delta / RoI regression risk for RPN with smooth L1 loss.
+    """Delta / RoI regression risk with smooth L1 loss.
 
     `bx` values cannot be `inf` or `-inf` otherwise the loss will be `nan`.
 
     Args:
-        bx_prd (tf.Tensor): predicted box (N_ac, 4); could be predicted deltas
-            or RoIs
         bx_tgt (tf.Tensor): target box (N_ac, 4); could be target deltas or
             ground truth boxes
+        bx_prd (tf.Tensor): predicted box (N_ac, 4); could be predicted deltas
+            or RoIs
         mask (tf.Tensor): 0/1 object mask (N_ac,)
 
     Returns:
@@ -1577,6 +1952,24 @@ def risk_rpn_bkg(logits: tf.Tensor, mask_bkg: tf.Tensor) -> tf.Tensor:
     return tf.reduce_sum(loss) / (tf.reduce_sum(mask_bkg) + EPS)
 
 
+def risk_logit(label: tf.Tensor, logit: tf.Tensor) -> tf.Tensor:
+    """Classification risk with sparse categorical cross entropy loss.
+
+    Args:
+        label (tf.Tensor): target classes (N, 1), from 0 to N_CLASS
+        logit (tf.Tensor): predicted logits (N, N_CLASS + 1)
+
+    Returns:
+        tf.Tensor: risk (scalar)
+    """
+    scce = tf.keras.losses.SparseCategoricalCrossentropy(
+        from_logits=True,
+        reduction="none",
+    )
+    loss = scce(label, logit)  # (N_obj,)
+    return tf.reduce_sum(loss) / tf.reduce_sum(tf.ones_like(label))
+
+
 def risk_rpn(
     bx_roi: tf.Tensor,
     bx_tgt: tf.Tensor,
@@ -1597,8 +1990,8 @@ def risk_rpn(
         tf.Tensor: risk (scalar)
     """
     loss_reg = tf.map_fn(
-        lambda x: risk_rpn_reg(x[0], x[1], x[2]),
-        (bx_roi, bx_tgt, mask_obj),
+        lambda x: risk_bbx_reg(x[0], x[1], x[2]),
+        (bx_tgt, bx_roi, mask_obj),
         fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
     )  # (B,)
     loss_obj = tf.map_fn(
@@ -1612,6 +2005,39 @@ def risk_rpn(
         fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
     )  # (B,)
     return tf.reduce_mean(loss_reg + loss_obj + loss_bkg)
+
+
+def risk_rcnn(
+    bbx_tgt: tf.Tensor,
+    bbx_prd: tf.Tensor,
+    label: tf.Tensor,
+    logit: tf.Tensor,
+    mask_obj: tf.Tensor,
+) -> tf.Tensor:
+    """R-CNN loss.
+
+    Args:
+        bbx_tgt (tf.Tensor): target bounding box deltas (B, N_ROI, 4)
+        bbx_prd (tf.Tensor): predicted bounding box (B, N_ROI, 4)
+        label (tf.Tensor): target classes (B, N_ROI, N_CLASS)
+        logit (tf.Tensor): predicted logits (B, N_ROI, N_CLASS)
+        mask_obj (tf.Tensor): 0/1 object mask (B, N_ROI)
+        mask_bak (tf.Tensor): 0/1 object mask (B, N_ROI)
+
+    Returns:
+        tf.Tensor: risk (scalar)
+    """
+    loss_cls = tf.map_fn(
+        lambda x: risk_logit(x[0], x[1]),
+        (label, logit),
+        fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
+    )  # (B,)
+    loss_reg = tf.map_fn(
+        lambda x: risk_bbx_reg(x[0], x[1], x[2]),
+        (bbx_tgt, bbx_prd, mask_obj),
+        fn_output_signature=tf.TensorSpec(shape=(), dtype=tf.float32),
+    )  # (B,)
+    return tf.reduce_mean(loss_cls + loss_reg)
 
 
 def tf_label(
@@ -1670,7 +2096,7 @@ class ModelRPN(tf.keras.Model):
         data: tuple[tf.Tensor, tuple[tf.Tensor, tf.Tensor]],
     ) -> dict[str, tf.Tensor]:
         """The logic for one training step."""
-        x, (bx_gt, _) = data
+        x, (bbx_gt, _) = data
 
         bsize = tf.shape(x)[0]
         # create anchors with matching batch size (B, N_ac, 4)
@@ -1684,11 +2110,11 @@ class ModelRPN(tf.keras.Model):
             # and dropout.
             dlt_prd, log_prd, bbx_prd = self(x, training=True)
             # NOTE: cannot use broadcasting for performance
-            bx_tgt = get_tgt_box(ac_, bx_gt)
+            bbx_tgt = get_tgt_rpn(ac_, bbx_gt)
             # NOTE: cannot use broadcasting for performance
-            dlt_tgt = bbox2delta(bx_tgt, ac_)
-            mask_obj = get_tgt_mask(bx_tgt, bkg=False)
-            mask_bkg = get_tgt_mask(bx_tgt, bkg=True)
+            dlt_tgt = bbox2delta(bbx_tgt, ac_)
+            mask_obj = get_tgt_mask(bbx_tgt, bkg=False)
+            mask_bkg = get_tgt_mask(bbx_tgt, bkg=True)
             loss = risk_rpn(dlt_prd, dlt_tgt, log_prd, mask_obj, mask_bkg)
 
         trainable_vars = self.trainable_variables
@@ -1710,7 +2136,7 @@ class ModelRPN(tf.keras.Model):
             ))
 
         self.mean_loss.update_state(loss)
-        label = tf_label(bbx_prd, bx_tgt, iou_th=0.5)
+        label = tf_label(bbx_prd, bbx_gt, iou_th=0.5)
         self.mean_ap.update_state(label, log_prd)
 
         return {
@@ -1735,11 +2161,104 @@ class ModelRPN(tf.keras.Model):
         data: tuple[tf.Tensor, tuple[tf.Tensor, tf.Tensor]],
     ) -> dict[str, tf.Tensor]:
         """Logic for one evaluation step."""
-        x, (bx_gt, _) = data
+        x, (bbx_gt, _) = data
 
         dlt_prd, log_prd, bbx_prd = self(x, training=False)
-        label = tf_label(bbx_prd, bx_gt, iou_th=0.5)
+        label = tf_label(bbx_prd, bbx_gt, iou_th=0.5)
         self.mean_ap.update_state(label, log_prd)
+
+        return {
+            "meanap": self.mean_ap.result(),
+        }
+
+
+class ModelRCNN(tf.keras.Model):
+    """Custom Model for R-CNN."""
+
+    def __init__(self, *args, **kwargs):
+        """Initialize the model."""
+        super().__init__(*args, **kwargs)
+        self.mean_loss = tf.keras.metrics.Mean(name="loss")
+        self.mean_ap = tf.keras.metrics.AUC(name="meanap", curve="PR")
+
+    def train_step(
+        self,
+        data: tuple[tf.Tensor, tuple[tf.Tensor, tf.Tensor]],
+    ) -> dict[str, tf.Tensor]:
+        """The logic for one training step."""
+        x, (bbx_gt, cls_gt) = data
+        cls_gt = tf.cast(cls_gt, tf.float32)
+
+        with tf.GradientTape() as tape:
+            # In TF2, the `training` flag affects, during both training and
+            # inference, behavior of layers such as normalization (e.g. BN)
+            # and dropout.
+            dlt_prd, log, roi = self(x, training=True)
+            # NOTE: cannot use broadcasting for performance
+            bbx_tgt, lab_tgt = get_tgt_rcnn(roi, bbx_gt, log, cls_gt)
+            bbx_tgt = tf.stop_gradient(bbx_tgt)
+            lab_tgt = tf.stop_gradient(lab_tgt)
+            dlt_tgt = bbox2delta(bbx_tgt, roi)  # GT - RoI = R-CNN delta
+            dlt_tgt = tf.stop_gradient(dlt_tgt)
+            mask_pos = get_tgt_mask(bbx_tgt, bkg=False)
+            loss = risk_rcnn(dlt_tgt, dlt_prd, lab_tgt, log, mask_pos)
+
+        trainable_vars = self.trainable_variables
+
+        grads = tape.gradient(loss, trainable_vars)
+        # check NaN using assertions; it works both in
+        # - Graph Construction Phase / Defining operations (blueprint)
+        # - Session Execution Phase / Running operations (actual computation)
+        grads = [
+            tf.debugging.assert_all_finite(
+                g, message="NaN/Inf gradient detected.") for g in grads
+        ]
+        # clip gradient
+        grads, _ = tf.clip_by_global_norm(grads, 5.0)
+        self.optimizer.apply_gradients(
+            zip(  # noqa: B905
+                grads,
+                trainable_vars,
+            ))
+
+        self.mean_loss.update_state(loss)
+
+        # mAP@50
+        # TODO: currently ignoring classes
+        bbx_prd = delta2bbox(roi, dlt_prd)
+        label = tf_label(bbx_prd, bbx_gt, iou_th=0.5)
+        self.mean_ap.update_state(
+            label, tf.reduce_max(log[..., :-1], axis=-1, keepdims=True))
+
+        return {
+            "loss": self.mean_loss.result(),
+            "meanap": self.mean_ap.result(),
+        }
+
+    @property
+    def metrics(self) -> list[tf.keras.metrics.Metric]:
+        """List of the model's metrics.
+
+        We list our `Metric` objects here so that `reset_states()` can be
+        called automatically at the start of each epoch
+        or at the start of `evaluate()`.
+        If you don't implement this property, you have to call
+        `reset_states()` yourself at the time of your choosing.
+        """
+        return [self.mean_loss, self.mean_ap]
+
+    def test_step(
+        self,
+        data: tuple[tf.Tensor, tuple[tf.Tensor, tf.Tensor]],
+    ) -> dict[str, tf.Tensor]:
+        """Logic for one evaluation step."""
+        x, (bbx_gt, cls_gt) = data
+
+        dlt_prd, log, roi = self(x, training=False)
+        bbx_prd = delta2bbox(roi, dlt_prd)
+        label = tf_label(bbx_prd, bbx_gt, iou_th=0.5)
+        self.mean_ap.update_state(
+            label, tf.reduce_max(log[..., :-1], axis=-1, keepdims=True))
 
         return {
             "meanap": self.mean_ap.result(),
@@ -1750,8 +2269,11 @@ def get_rpn_model(
     *,
     freeze_backbone: bool = False,
     freeze_rpn: bool = False,
+    freeze_rcnn: bool = False,
 ) -> ModelRPN:
     """Create a RPN model for training or prediction."""
+    # a negative buffer to prevent going out of the image
+    buffer = -1e-5
     # Backbone
     bb = tf.keras.applications.resnet50.ResNet50(
         weights="imagenet",
@@ -1760,8 +2282,17 @@ def get_rpn_model(
     )
 
     # Add RPN layers on top of the backbone
-    tmp_dlt, tmp_log, rpn_layers = rpn(bb.output, H_FM, W_FM)
-    bbx = roi(tmp_dlt)
+    dlt_ac, log_obj, rpn_layers = block_rpn(bb.output, H_FM, W_FM)
+    roi = block_roi(dlt_ac, buffer=buffer)
+    # NMS
+    roi_nms = block_nms(roi, log_obj, N_SUPP_SCORE, N_SUPP_NMS, NMS_TH)
+    # RoI Align
+    fm_roi = block_roialign(bb.output, roi_nms, N_ALIGN_GRID, N_SUPP_NMS)
+    # classification and bounding box regression head
+    dlt, logit, rcnn_layers = block_rcnn(fm_roi)
+    # # predicted bounding box
+    # bbx = delta2bbox(roi, dlt)
+    # bbx = tf.clip_by_value(bbx, -buffer, 1. + buffer)
 
     # Freeze all layers in the backbone for training
     if freeze_backbone:
@@ -1771,11 +2302,66 @@ def get_rpn_model(
     if freeze_rpn:
         for layer in rpn_layers:
             layer.trainable = False
+    # Freeze all layers in the R-CNN for training
+    if freeze_rcnn:
+        for layer in rcnn_layers:
+            layer.trainable = False
 
     # Create the ModelRPN instance
     model = ModelRPN(
         inputs=bb.input,
-        outputs=[tmp_dlt, tmp_log, bbx],
+        outputs=[dlt_ac, log_obj, roi],
+    )
+
+    return model
+
+
+def get_model(
+    *,
+    freeze_backbone: bool = False,
+    freeze_rpn: bool = False,
+    freeze_rcnn: bool = False,
+) -> ModelRCNN:
+    """Create a model for training or prediction."""
+    # a negative buffer to prevent going out of the image
+    buffer = -1e-5
+    # Backbone
+    bb = tf.keras.applications.resnet50.ResNet50(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(H, W, 3),
+    )
+
+    # Add RPN layers on top of the backbone
+    dlt_ac, log_obj, rpn_layers = block_rpn(bb.output, H_FM, W_FM)
+    roi = block_roi(dlt_ac, buffer=buffer)
+    # NMS
+    roi_nms = block_nms(roi, log_obj, N_SUPP_SCORE, N_SUPP_NMS, NMS_TH)
+    # RoI Align
+    fm_roi = block_roialign(bb.output, roi_nms, N_ALIGN_GRID, N_SUPP_NMS)
+    # classification and bounding box regression head
+    dlt, logit, rcnn_layers = block_rcnn(fm_roi)
+    # # predicted bounding box
+    # bbx = delta2bbox(roi, dlt)
+    # bbx = tf.clip_by_value(bbx, -buffer, 1. + buffer)
+
+    # Freeze all layers in the backbone for training
+    if freeze_backbone:
+        for layer in bb.layers:
+            layer.trainable = False
+    # Freeze all layers in the RPN for training
+    if freeze_rpn:
+        for layer in rpn_layers:
+            layer.trainable = False
+    # Freeze all layers in the R-CNN for training
+    if freeze_rcnn:
+        for layer in rcnn_layers:
+            layer.trainable = False
+
+    # Create the ModelRCNN instance
+    model = ModelRCNN(
+        inputs=bb.input,
+        outputs=[dlt, logit, roi_nms],
     )
 
     return model
@@ -1790,7 +2376,8 @@ def get_rpn_model(
 
 # Callbacks
 PATH_CKPT_RPN = "model_weights/rpn/ckpt"
-PATH_CKPT_FINETUNE = "model_weights/rpn_finetune/ckpt"
+PATH_CKPT_RCNN = "model_weights/rcnn/ckpt"
+PATH_CKPT_RCNN_FT = "model_weights/rcnn_ft/ckpt"
 
 
 def get_cb_ckpt(path: str) -> tf.keras.callbacks.ModelCheckpoint:
@@ -1820,6 +2407,16 @@ cb_lr = tf.keras.callbacks.ReduceLROnPlateau(
     min_delta=0.001,
     verbose=1,
 )
+cb_lr_rcnn = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor="val_meanap",
+    mode="max",
+    factor=0.2,
+    patience=2,
+    cooldown=4,
+    min_lr=1e-8,
+    min_delta=0.001,
+    verbose=1,
+)
 
 # # Adam Optimizer
 # optimizer = tf.keras.optimizers.Adam(
@@ -1834,23 +2431,105 @@ optimizer = tf.keras.optimizers.SGD(learning_rate=LR_INIT, momentum=0.9)
 ds_tr, _ = load_train_voc2007(BATCH_SIZE_TR)
 ds_va, _ = load_test_voc2007(BATCH_SIZE_TE)
 
-# training
-model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
-model.compile(optimizer=optimizer)
-model.fit(
-    ds_tr,
-    epochs=30,
-    validation_data=ds_va,
-    callbacks=[get_cb_ckpt(PATH_CKPT_RPN), cb_earlystop, cb_lr],
-)
+# # train RPN
+# model = get_rpn_model(freeze_backbone=False,
+#                       freeze_rpn=False,
+#                       freeze_rcnn=True)
+# model.compile(optimizer=optimizer)
+# model.fit(
+#     ds_tr,
+#     epochs=30,
+#     validation_data=ds_va,
+#     callbacks=[get_cb_ckpt(PATH_CKPT_RPN), cb_earlystop, cb_lr],
+# )
 
-# # fine-tuning
-# model = get_rpn_model(freeze_backbone=False, freeze_rpn=False)
+# # train R-CNN
+# model = get_model(
+#     freeze_backbone=True,
+#     freeze_rpn=True,
+#     freeze_rcnn=False,
+# )
 # model.load_weights(PATH_CKPT_RPN)
 # model.compile(optimizer=optimizer)
 # model.fit(
 #     ds_tr,
-#     epochs=100,
+#     epochs=20,
 #     validation_data=ds_va,
-#     callbacks=[get_cb_ckpt(PATH_CKPT_FINETUNE), cb_earlystop, cb_lr],
+#     callbacks=[get_cb_ckpt(PATH_CKPT_RCNN), cb_earlystop, cb_lr_rcnn],
 # )
+
+# fine-tune R-CNN
+model = get_model(
+    freeze_backbone=False,
+    freeze_rpn=True,
+    freeze_rcnn=False,
+)
+model.load_weights(PATH_CKPT_RCNN)
+model.compile(optimizer=optimizer)
+model.fit(
+    ds_tr,
+    epochs=20,
+    validation_data=ds_va,
+    callbacks=[get_cb_ckpt(PATH_CKPT_RCNN_FT), cb_earlystop, cb_lr_rcnn],
+)
+
+# =============================================================================
+# SECTION: Debugging
+# =============================================================================
+
+# # debugging for RPN training
+# data = next(iter(ds_tr))
+# model = get_rpn_model(
+#     freeze_backbone=True,
+#     freeze_rpn=False,
+#     freeze_rcnn=True,
+# )
+# x, (bx_gt, _) = data
+# bsize = tf.shape(x)[0]
+# ac_ = tf.repeat(AC_VAL[tf.newaxis, ...], bsize, axis=0)
+#
+# with tf.GradientTape() as tape:
+#     dlt_prd, log_prd, bbx_prd = model(x, training=True)
+#     # NOTE: cannot use broadcasting for performance
+#     bx_tgt = get_tgt_rpn(ac_, bx_gt)
+#     # NOTE: cannot use broadcasting for performance
+#     dlt_tgt = bbox2delta(bx_tgt, ac_)
+#     mask_obj = get_tgt_mask(bx_tgt, bkg=False)
+#     mask_bkg = get_tgt_mask(bx_tgt, bkg=True)
+#     loss = risk_rpn(dlt_prd, dlt_tgt, log_prd, mask_obj, mask_bkg)
+#
+# with tf.device("/CPU:0"):
+#     trainable_vars = model.trainable_variables
+#     grads = tape.gradient(loss, trainable_vars)
+
+# # debugging for R-CNN training
+# data = next(iter(ds_tr))
+# model = get_model(
+#     freeze_backbone=False,
+#     freeze_rpn=True,
+#     freeze_rcnn=False,
+# )
+# x, (bbx_gt, cls_gt) = data
+# cls_gt = tf.cast(cls_gt, tf.float32)
+#
+# with tf.GradientTape() as tape:
+#     dlt_prd, log, roi = model(x, training=True)
+#     # real loss
+#     bbx_tgt, lab_tgt = get_tgt_rcnn(roi, bbx_gt, log, cls_gt)
+#     bbx_tgt = tf.stop_gradient(bbx_tgt)
+#     lab_tgt = tf.stop_gradient(lab_tgt)
+#     dlt_tgt = bbox2delta(bbx_tgt, roi)  # GT - RoI = R-CNN delta
+#     dlt_tgt = tf.stop_gradient(dlt_tgt)
+#     mask_pos = get_tgt_mask(bbx_tgt, bkg=False)
+#     loss = risk_rcnn(dlt_tgt, dlt_prd, lab_tgt, log, mask_pos)
+#     # # sim loss
+#     # loss_log = tf.reduce_mean(tf.square(log))
+#     # loss_dlt = tf.reduce_mean(tf.square(dlt_prd))
+#     # loss_roi = tf.reduce_mean(tf.square(roi))
+#     # loss_tmproi = tf.reduce_mean(tf.square(roi))
+#     # loss = loss_dlt
+#
+# # NOTE: OOM if no NMS is applied (too many RoIs)
+# with tf.device("/CPU:0"):
+#     trainable_vars = model.trainable_variables
+#     grads = tape.gradient(loss, trainable_vars)
