@@ -1,0 +1,33 @@
+# general things to ignore
+build/
+dist/
+*.egg-info/
+*.egg
+*.py[cod]
+__pycache__/
+*.so
+*~
+
+# due to using tox and pytest
+.tox
+.cache
+.coverage
+.coverage.*
+coverage.xml
+coverage.txt
+
+.DS_Store
+
+# pep582
+__pypackages__/
+
+# ide
+.idea/
+
+# pyenv / pdm python version
+.python-version
+.pdm-python
+
+# jupyter notebook
+*.ipynb
+.ipynb_checkpoints/
